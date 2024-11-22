@@ -549,6 +549,10 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         boot_logger_init(p.isolation_type, typ);
         log!("openhcl_boot: early debugging enabled");
     }
+
+    // Always enable logging to HV-debugger
+    boot_logger_init(p.isolation_type, LoggerType::Serial);
+ 
     let can_trust_host =
         p.isolation_type == IsolationType::None || static_options.confidential_debug;
 
