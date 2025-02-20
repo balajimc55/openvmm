@@ -1863,6 +1863,7 @@ impl UhProcessor<'_, TdxBacked> {
             }
             VmxExit::HW_INTERRUPT => {
                 // Check if the interrupt was triggered by a hardware breakpoint.
+                /*
                 let debug_regs = self
                     .access_state(intercepted_vtl.into())
                     .debug_regs()
@@ -1870,7 +1871,7 @@ impl UhProcessor<'_, TdxBacked> {
 
                 // The lowest four bits of DR6 indicate which of the
                 // four breakpoints triggered.
-                breakpoint_debug_exception = debug_regs.dr6.trailing_zeros() < 4;
+                breakpoint_debug_exception = debug_regs.dr6.trailing_zeros() < 4; */
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.hw_interrupt
             }
             VmxExit::SMI_INTR => &mut self.backing.vtls[intercepted_vtl].exit_stats.smi_intr,
