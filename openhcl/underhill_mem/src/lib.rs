@@ -629,7 +629,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
 
         // Set GPN sharing status in output.
         for (gpn, host_vis) in gpns.iter().zip(host_visibility.iter_mut()) {
-            *host_vis = if inner.shared.check_bitmap(*gpn) {
+            *host_vis = if inner.shared.check_shared_bitmap(*gpn) {
                 HostVisibilityType::SHARED
             } else {
                 HostVisibilityType::PRIVATE
@@ -673,7 +673,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                 // find all accepted memory. When lazy acceptance exists,
                 // this should track all pages that have been accepted and
                 // should be used instead.
-                if !inner.encrypted.check_bitmap(gpn) {
+                if !inner.encrypted.check_acceptance_bitmap(gpn) {
                     if page_count > 0 {
                         let end_address = protect_start + (page_count * PAGE_SIZE as u64);
                         ranges.push(MemoryRange::new(protect_start..end_address));
@@ -727,7 +727,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         let inner = self.inner.lock();
 
         // Protections cannot be applied to a host-visible page
-        if gpns.iter().any(|&gpn| inner.shared.check_bitmap(gpn)) {
+        if gpns.iter().any(|&gpn| inner.shared.check_shared_bitmap(gpn)) {
             return Err((HvError::OperationDenied, 0));
         }
 

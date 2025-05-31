@@ -98,10 +98,31 @@ fn accept_ram_pages(
     vtl0_mapping: Arc<GuestMemoryMapping>,
     validated_ranges: &mut Vec<MemoryRange>,
 ) {
-    let vp_count = std::cmp::max(1, params.processor_topology.vp_count() - 1);
-    let lazy_accept_ram = params.mem_layout.ram();
     let hardware_isolated = params.isolation.is_hardware_isolated();
+    let lazy_accept_ram = params.mem_layout.ram();
+    let accepted_ranges_vec: Vec<MemoryRange> = accepted_ranges.collect();
+    let ram_ranges = if LAZY_ACCEPT {
+        // find out which of the ram range is partially accepted
+        // and accept only that range completely.
+        // leave the rest to be dynamically accepted
+        // let partial_accepted_ranges = vec![MemoryRangeWithNode::EMPTY];
 
+        let mut partial_accepted_ranges = vec![];
+
+        for range_node in lazy_accept_ram.iter() {
+            if accepted_ranges_vec.iter().any(|r| range_node.is_range_part_of_node(r)) {
+                partial_accepted_ranges.push(range_node.range);
+            }
+        }
+
+        // partial_accepted_ranges.iter().map(|r| r.range)
+        partial_accepted_ranges.into_iter()
+    } else {
+        ram
+    };
+    let accepted_ranges = accepted_ranges_vec.into_iter(); // Convert back to an iterator if needed
+
+    let vp_count = std::cmp::max(1, params.processor_topology.vp_count() - 1);
     let accept_subrange = move |subrange| {
         acceptor.accept_vtl0_pages(subrange).unwrap();
         if hardware_isolated {
@@ -115,32 +136,8 @@ fn accept_ram_pages(
         }
     };
     tracing::error!("Accepting VTL0 memory");
-
     std::thread::scope(|scope| {
-        let ram_ranges = if LAZY_ACCEPT {
-            // find out which of the ram range is partially accepted
-            // and accept only that range completely.
-            // leave the rest to be dynamically accepted
-            // let partial_accepted_ranges = vec![MemoryRangeWithNode::EMPTY];
-
-            let mut partial_accepted_ranges = vec![];
-            for range_node in lazy_accept_ram.iter() {
-                accepted_ranges
-                    .into_iter()
-                    .filter(|r| range_node.is_range_part_of_node(r))
-                    .map(|r| partial_accepted_ranges.push(range_node));
-            }
-
-            // partial_accepted_ranges.iter().map(|r| r.range)
-            partial_accepted_ranges
-                .into_iter()
-                .map(|r| r.range)
-                .collect::<Vec<_>>()
-        } else {
-            ram.collect::<Vec<_>>()
-        };
-
-        for source_range in memory_range::subtract_ranges(ram_ranges, accepted_ranges) {
+      for source_range in memory_range::subtract_ranges(ram_ranges, accepted_ranges) {
             validated_ranges.push(source_range);
 
             // Chunks must be 2mb aligned
@@ -253,15 +250,17 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             // On hardware isolated platforms, accepted memory was accepted with
             // VTL2 only permissions. Provide VTL0 access here.
             tracing::debug!("Applying VTL0 protections");
-            for range in memory_range::overlapping_ranges(ram.clone(), accepted_ranges.clone()) {
-                acceptor.apply_initial_lower_vtl_protections(range)?;
+            if hardware_isolated {
+                for range in memory_range::overlapping_ranges(ram.clone(), accepted_ranges.clone()) {
+                    acceptor.apply_initial_lower_vtl_protections(range)?;
+                }
             }
             accept_ram_pages(
                 &params,
                 &acceptor,
                 ram,
-                accepted_ranges.collect::<Vec<_>>(),
-                vtl0_mapping,
+                accepted_ranges,
+                vtl0_mapping.clone(),
                 &mut validated_ranges,
             );
         }
@@ -346,7 +345,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         // marked as no-access in the bitmap.
         tracing::error!("Updating shared mapping bitmaps");
         for range in params.shared_pool {
-            shared_mapping.update_acceptance_bitmap(range.range, true);
+            shared_mapping.update_shared_bitmap(range.range, true);
         }
 
         tracing::error!("Creating VTL0 guest memory");
@@ -440,8 +439,8 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                     &params,
                     &acceptor,
                     ram,
-                    accepted_ranges.collect(),
-                    vtl0_mapping,
+                    accepted_ranges,
+                    vtl0_mapping.clone(),
                     &mut validated_ranges,
                 );
             }

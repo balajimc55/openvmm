@@ -182,7 +182,6 @@ impl GuestMemoryMappingBuilder {
             let acceptance_bitmap =
                 SparseMapping::new((address_space_size as usize / PAGE_SIZE).div_ceil(8))
                     .map_err(MappingError::BitmapReserve)?;
-
             acceptance_bitmap
                 .map_zero(0, acceptance_bitmap.len())
                 .map_err(MappingError::BitmapMap)?;
@@ -234,8 +233,8 @@ impl GuestMemoryMappingBuilder {
                     .map_err(MappingError::BitmapAlloc)?;
             }
 
-            // For simplicity, check that all the pages are 8page aligned instead of 2M aligned.
-            //As a 2nd step, for acceptance bitmap we may want to enforce 2M alignment instead.
+            // For simplicity, check that all the pages are 8-page aligned instead of 2M aligned.
+            // As a 2nd step, for acceptance bitmap we may want to enforce 2M alignment instead.
             // Allocate bitmap here
             if let Some(acceptance_bitmap) = &acceptance_bitmap {
                 // To simplify bitmap implementation, require that all memory
@@ -334,8 +333,8 @@ impl GuestMemoryMapping {
         }
     }
 
-    pub(crate) fn check_bitmap(&self, gpn: u64, main_bitmap: &Option<SparseMapping>) -> bool {
-        let bitmap = main_bitmap.as_ref().unwrap();
+    pub(crate) fn check_bitmap(&self, gpn: u64, bitmap: &Option<SparseMapping>) -> bool {
+        let bitmap = bitmap.as_ref().unwrap();
         let mut b = 0;
         bitmap
             .read_at(gpn as usize / 8, std::slice::from_mut(&mut b))
@@ -348,11 +347,11 @@ impl GuestMemoryMapping {
         &self,
         range: MemoryRange,
         state: bool,
-        main_bitmap: &Option<SparseMapping>,
-        main_bitmap_lock: &Mutex,
+        bitmap: &Option<SparseMapping>,
+        bitmap_lock: &Mutex<()>,
     ) {
-        let bitmap = main_bitmap.as_ref().unwrap();
-        let _lock = main_bitmap_lock.lock();
+        let bitmap = bitmap.as_ref().unwrap();
+        let _lock = bitmap_lock.lock();
         for gpn in range.start() / PAGE_SIZE as u64..range.end() / PAGE_SIZE as u64 {
             // TODO: use `fill_at` for the aligned part of the range.
             let mut b = 0;
@@ -379,7 +378,12 @@ impl GuestMemoryMapping {
     }
 
     pub fn update_shared_bitmap(&self, range: MemoryRange, state: bool) {
-        self.update_bitmap(range, state, &self.bitmap, &self.bitmap_lock)
+        self.update_bitmap(
+            range,
+            state,
+            &self.bitmap,
+            &self.bitmap_lock
+        )
     }
 
     pub fn update_acceptance_bitmap(&self, range: MemoryRange, state: bool) {
