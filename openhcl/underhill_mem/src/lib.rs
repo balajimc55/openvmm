@@ -534,7 +534,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             // Unaccept the pages so that the hypervisor can reclaim them.
             for &range in &ranges {
                 self.acceptor.unaccept_vtl0_pages(range);
-                clear_bitmap.update_acceptance_bitmap(range, false);
+                inner.encrypted.update_acceptance_bitmap(range, false);
             }
         }
 

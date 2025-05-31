@@ -27,9 +27,9 @@ pub struct GuestMemoryMapping {
     mapping: SparseMapping,
     iova_offset: Option<u64>,
     #[inspect(with = "Option::is_some")]
-    bitmap: Option<SparseMapping>,
+    shared_bitmap: Option<SparseMapping>,
     #[inspect(skip)]
-    bitmap_lock: Mutex<()>,
+    shared_bitmap_lock: Mutex<()>,
     registrar: Option<MemoryRegistrar<MshvVtlWithPolicy>>,
     #[inspect(with = "Option::is_some")]
     acceptance_bitmap: Option<SparseMapping>,
@@ -70,8 +70,8 @@ impl GuestMemoryMappingBuilder {
     /// Set whether to allocate a tracking for memory access, and specify the
     /// initial state of the bitmap.
     ///
-    /// This is used to support tracking the shared/encrypted state of each
-    /// page.
+    /// This is used to support tracking the shared/encrypted state and 
+    /// acceptance state of each page.
     ///
     /// FUTURE: use bitmaps to track VTL permissions as well, to support guest
     /// VSM for hardware-isolated VMs.
@@ -167,7 +167,7 @@ impl GuestMemoryMappingBuilder {
 
         tracing::trace!(?mapping, "map_lower_vtl_memory mapping");
 
-        let bitmap = if self.bitmap_state.is_some() {
+        let shared_bitmap = if self.bitmap_state.is_some() {
             let bitmap = SparseMapping::new((address_space_size as usize / PAGE_SIZE).div_ceil(8))
                 .map_err(MappingError::BitmapReserve)?;
             bitmap
@@ -179,13 +179,12 @@ impl GuestMemoryMappingBuilder {
         };
 
         let acceptance_bitmap = if self.bitmap_state.is_some() {
-            let acceptance_bitmap =
-                SparseMapping::new((address_space_size as usize / PAGE_SIZE).div_ceil(8))
-                    .map_err(MappingError::BitmapReserve)?;
-            acceptance_bitmap
-                .map_zero(0, acceptance_bitmap.len())
+            let bitmap = SparseMapping::new((address_space_size as usize / PAGE_SIZE).div_ceil(8))
+                .map_err(MappingError::BitmapReserve)?;
+            bitmap
+                .map_zero(0, bitmap.len())
                 .map_err(MappingError::BitmapMap)?;
-            Some(acceptance_bitmap)
+            Some(bitmap)
         } else {
             None
         };
@@ -210,7 +209,7 @@ impl GuestMemoryMappingBuilder {
                 )
                 .map_err(MappingError::Map)?;
 
-            if let Some(bitmap) = &bitmap {
+            if let Some(shared_bitmap) = &shared_bitmap {
                 // To simplify bitmap implementation, require that all memory
                 // regions be 8-page aligned. Relax this if necessary.
                 if entry.range.start() % (PAGE_SIZE as u64 * 8) != 0
@@ -228,7 +227,7 @@ impl GuestMemoryMappingBuilder {
                 // TODO SNP: map some pre-reserved lower VTL memory into the
                 // bitmap. Or just figure out how to hot add that memory to the
                 // kernel. Or have the boot loader reserve it at boot time.
-                bitmap
+                shared_bitmap
                     .alloc(bitmap_page_start * PAGE_SIZE, page_count * PAGE_SIZE)
                     .map_err(MappingError::BitmapAlloc)?;
             }
@@ -263,7 +262,7 @@ impl GuestMemoryMappingBuilder {
         }
 
         // Set the initial bitmap state.
-        if let Some((bitmap, true)) = bitmap.as_ref().zip(self.bitmap_state) {
+        if let Some((bitmap, true)) = shared_bitmap.as_ref().zip(self.bitmap_state) {
             for entry in memory_layout.ram() {
                 let start_gpn = entry.range.start() / PAGE_SIZE as u64;
                 let gpn_count = entry.range.len() / PAGE_SIZE as u64;
@@ -307,8 +306,8 @@ impl GuestMemoryMappingBuilder {
         Ok(GuestMemoryMapping {
             mapping,
             iova_offset: self.dma_base_address,
-            bitmap,
-            bitmap_lock: Default::default(),
+            shared_bitmap,
+            shared_bitmap_lock: Default::default(),
             registrar,
             acceptance_bitmap,
             acceptance_bitmap_lock: Default::default(),
@@ -370,7 +369,7 @@ impl GuestMemoryMapping {
     }
 
     pub fn check_shared_bitmap(&self, gpn: u64) -> bool {
-        self.check_bitmap(gpn, &self.bitmap)
+        self.check_bitmap(gpn, &self.shared_bitmap)
     }
 
     pub fn check_acceptance_bitmap(&self, gpn: u64) -> bool {
@@ -381,8 +380,8 @@ impl GuestMemoryMapping {
         self.update_bitmap(
             range,
             state,
-            &self.bitmap,
-            &self.bitmap_lock
+            &self.shared_bitmap,
+            &self.shared_bitmap_lock
         )
     }
 
@@ -437,7 +436,7 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
     }
 
     fn access_bitmap(&self) -> Option<guestmem::BitmapInfo> {
-        self.bitmap.as_ref().map(|bitmap| {
+        self.shared_bitmap.as_ref().map(|bitmap| {
             let ptr = NonNull::new(bitmap.as_ptr().cast()).unwrap();
             guestmem::BitmapInfo {
                 read_bitmap: ptr,

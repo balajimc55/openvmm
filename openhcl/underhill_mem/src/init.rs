@@ -25,7 +25,6 @@ use virt::IsolationType;
 use virt_mshv_vtl::ProtectIsolatedMemory;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::memory::MemoryRangeWithNode;
-use vm_topology::memory::initialize_acceptance_bitmap;
 use vm_topology::processor::ProcessorTopology;
 
 const LAZY_ACCEPT: bool = true;
@@ -90,88 +89,6 @@ pub struct BootInit<'a> {
     pub accepted_regions: &'a [MemoryRange],
 }
 
-fn accept_ram_pages(
-    params: &Init<'_>,
-    acceptor: &Arc<MemoryAcceptor>,
-    ram: impl Iterator<Item = MemoryRange>,
-    accepted_ranges: impl Iterator<Item = MemoryRange>,
-    vtl0_mapping: Arc<GuestMemoryMapping>,
-    validated_ranges: &mut Vec<MemoryRange>,
-) {
-    let hardware_isolated = params.isolation.is_hardware_isolated();
-    let lazy_accept_ram = params.mem_layout.ram();
-    let accepted_ranges_vec: Vec<MemoryRange> = accepted_ranges.collect();
-    let ram_ranges = if LAZY_ACCEPT {
-        // find out which of the ram range is partially accepted
-        // and accept only that range completely.
-        // leave the rest to be dynamically accepted
-        // let partial_accepted_ranges = vec![MemoryRangeWithNode::EMPTY];
-
-        let mut partial_accepted_ranges = vec![];
-
-        for range_node in lazy_accept_ram.iter() {
-            if accepted_ranges_vec.iter().any(|r| range_node.is_range_part_of_node(r)) {
-                partial_accepted_ranges.push(range_node.range);
-            }
-        }
-
-        // partial_accepted_ranges.iter().map(|r| r.range)
-        partial_accepted_ranges.into_iter()
-    } else {
-        ram
-    };
-    let accepted_ranges = accepted_ranges_vec.into_iter(); // Convert back to an iterator if needed
-
-    let vp_count = std::cmp::max(1, params.processor_topology.vp_count() - 1);
-    let accept_subrange = move |subrange| {
-        acceptor.accept_vtl0_pages(subrange).unwrap();
-        if hardware_isolated {
-            // For VBS-isolated VMs, the VTL protections are set as
-            // part of the accept call.
-            acceptor
-                .apply_initial_lower_vtl_protections(subrange)
-                .unwrap();
-
-            vtl0_mapping.update_acceptance_bitmap(subrange, true);
-        }
-    };
-    tracing::error!("Accepting VTL0 memory");
-    std::thread::scope(|scope| {
-      for source_range in memory_range::subtract_ranges(ram_ranges, accepted_ranges) {
-            validated_ranges.push(source_range);
-
-            // Chunks must be 2mb aligned
-            let two_mb = 2 * 1024 * 1024;
-            let mut range = source_range.aligned_subrange(two_mb);
-            if !range.is_empty() {
-                let chunk_size = (range.page_count_2m().div_ceil(vp_count as u64)) * two_mb;
-                let chunk_count = range.len().div_ceil(chunk_size);
-
-                for _ in 0..chunk_count {
-                    let subrange;
-                    (subrange, range) = if range.len() >= chunk_size {
-                        range.split_at_offset(chunk_size)
-                    } else {
-                        (range, MemoryRange::EMPTY)
-                    };
-                    scope.spawn(move || accept_subrange(subrange));
-                }
-                assert!(range.is_empty());
-            }
-
-            // Now accept whatever wasn't aligned on the edges
-            scope.spawn(move || {
-                for unaligned_subrange in memory_range::subtract_ranges(
-                    [source_range],
-                    [source_range.aligned_subrange(two_mb)],
-                ) {
-                    accept_subrange(unaligned_subrange);
-                }
-            });
-        }
-    });
-}
-
 pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
     let mut validated_ranges = Vec::new();
 
@@ -201,6 +118,68 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 .await?;
         } else {
             // Prepare VTL0 memory for mapping.
+            let acceptor = acceptor.as_ref().unwrap();
+            let ram = params.mem_layout.ram().iter().map(|r| r.range);
+            let accepted_ranges = boot_init.accepted_regions.iter().copied();
+            // On hardware isolated platforms, accepted memory was accepted with
+            // VTL2 only permissions. Provide VTL0 access here.
+            tracing::debug!("Applying VTL0 protections");
+            if hardware_isolated {
+                for range in memory_range::overlapping_ranges(ram.clone(), accepted_ranges.clone())
+                {
+                    acceptor.apply_initial_lower_vtl_protections(range)?;
+                }
+            }
+
+            if !LAZY_ACCEPT {
+                // Accept the memory that was not accepted by the boot loader.
+                let vp_count = std::cmp::max(1, params.processor_topology.vp_count() - 1);
+                let accept_subrange = move |subrange| {
+                    acceptor.accept_vtl0_pages(subrange).unwrap();
+                    if hardware_isolated {
+                        // For VBS-isolated VMs, the VTL protections are set as
+                        // part of the accept call.
+                        acceptor
+                            .apply_initial_lower_vtl_protections(subrange)
+                            .unwrap();
+                    }
+                };
+                tracing::debug!("Accepting VTL0 memory");
+                std::thread::scope(|scope| {
+                    for source_range in memory_range::subtract_ranges(ram, accepted_ranges) {
+                        validated_ranges.push(source_range);
+
+                        // Chunks must be 2mb aligned
+                        let two_mb = 2 * 1024 * 1024;
+                        let mut range = source_range.aligned_subrange(two_mb);
+                        if !range.is_empty() {
+                            let chunk_size = (range.page_count_2m().div_ceil(vp_count as u64)) * two_mb;
+                            let chunk_count = range.len().div_ceil(chunk_size);
+
+                            for _ in 0..chunk_count {
+                                let subrange;
+                                (subrange, range) = if range.len() >= chunk_size {
+                                    range.split_at_offset(chunk_size)
+                                } else {
+                                    (range, MemoryRange::EMPTY)
+                                };
+                                scope.spawn(move || accept_subrange(subrange));
+                            }
+                            assert!(range.is_empty());
+                        }
+
+                        // Now accept whatever wasn't aligned on the edges
+                        scope.spawn(move || {
+                            for unaligned_subrange in memory_range::subtract_ranges(
+                                [source_range],
+                                [source_range.aligned_subrange(two_mb)],
+                            ) {
+                                accept_subrange(unaligned_subrange);
+                            }
+                        });
+                    }
+                });
+            }
         }
     }
 
@@ -241,29 +220,6 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 .build(&gpa_fd, params.mem_layout)
                 .context("failed to map vtl0 memory")?
         });
-
-        if let Some(boot_init) = &params.boot_init {
-            let acceptor = acceptor.as_ref().unwrap();
-            let ram = params.mem_layout.ram().iter().map(|r| r.range);
-            let accepted_ranges = boot_init.accepted_regions.iter().copied();
-
-            // On hardware isolated platforms, accepted memory was accepted with
-            // VTL2 only permissions. Provide VTL0 access here.
-            tracing::debug!("Applying VTL0 protections");
-            if hardware_isolated {
-                for range in memory_range::overlapping_ranges(ram.clone(), accepted_ranges.clone()) {
-                    acceptor.apply_initial_lower_vtl_protections(range)?;
-                }
-            }
-            accept_ram_pages(
-                &params,
-                &acceptor,
-                ram,
-                accepted_ranges,
-                vtl0_mapping.clone(),
-                &mut validated_ranges,
-            );
-        }
 
         // Create the shared mapping with the complete memory map, to include
         // the shared pool. This memory is not private to VTL2 and is expected
@@ -348,6 +304,24 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             shared_mapping.update_shared_bitmap(range.range, true);
         }
 
+        // Update acceptance bitmap to mark pages already accepted.
+        if let Some(boot_init) = &params.boot_init {
+            let ram = params.mem_layout.ram().iter().map(|r| r.range);
+            let accepted_ranges = boot_init.accepted_regions.iter().copied();
+            if LAZY_ACCEPT {
+                // When lazy acceptance is enabled, only mark pages accepted in boot shim.
+                for range in memory_range::overlapping_ranges(ram.clone(), accepted_ranges.clone())
+                {
+                    vtl0_mapping.update_acceptance_bitmap(range, true);
+                }
+            } else {
+                // Mark entire VTL0 memory as accepted.
+                for range in ram {
+                    vtl0_mapping.update_acceptance_bitmap(range, true);
+                }
+            }
+        }
+
         tracing::error!("Creating VTL0 guest memory");
         let vtl0_gm = GuestMemory::new_multi_region(
             "vtl0",
@@ -429,23 +403,6 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                     .context("failed to map vtl0 memory")?,
             )
         };
-
-        if let Some(boot_init) = &params.boot_init {
-            if params.isolation.is_isolated() {
-                let acceptor = acceptor.as_ref().unwrap();
-                let ram = params.mem_layout.ram().iter().map(|r| r.range);
-                let accepted_ranges = boot_init.accepted_regions.iter().copied();
-                accept_ram_pages(
-                    &params,
-                    &acceptor,
-                    ram,
-                    accepted_ranges,
-                    vtl0_mapping.clone(),
-                    &mut validated_ranges,
-                );
-            }
-        }
-
         let vtl0_gm = GuestMemory::new("vtl0", vtl0_mapping.clone());
 
         let vtl1_mapping = if params.maximum_vtl >= Vtl::Vtl1 {
