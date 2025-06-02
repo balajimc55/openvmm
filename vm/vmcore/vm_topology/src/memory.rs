@@ -4,7 +4,6 @@
 //! Tools to the compute guest memory layout.
 
 use memory_range::MemoryRange;
-use std::usize;
 use thiserror::Error;
 
 const PAGE_SIZE: u64 = 4096;
@@ -99,13 +98,6 @@ fn validate_ranges_core<T>(ranges: &[T], getter: impl Fn(&T) -> &MemoryRange) ->
     }
 
     Ok(())
-}
-
-impl MemoryRangeWithNode {
-    /// Check if atleast a part of the range is present in the node's range.
-    pub fn is_range_part_of_node(&self, range: &MemoryRange) -> bool {
-        self.range.contains_addr(range.start()) || self.range.contains_addr(range.end())
-    }
 }
 
 impl MemoryLayout {
@@ -328,15 +320,15 @@ mod tests {
             &[
                 MemoryRangeWithNode {
                     range: MemoryRange::new(0..GB),
-                    vnode: 0,
+                    vnode: 0
                 },
                 MemoryRangeWithNode {
                     range: MemoryRange::new(2 * GB..3 * GB),
-                    vnode: 0,
+                    vnode: 0
                 },
                 MemoryRangeWithNode {
                     range: MemoryRange::new(4 * GB..TB + 2 * GB),
-                    vnode: 0,
+                    vnode: 0
                 },
             ]
         );
@@ -350,15 +342,15 @@ mod tests {
             &[
                 MemoryRangeWithNode {
                     range: MemoryRange::new(0..GB),
-                    vnode: 0,
+                    vnode: 0
                 },
                 MemoryRangeWithNode {
                     range: MemoryRange::new(2 * GB..3 * GB),
-                    vnode: 0,
+                    vnode: 0
                 },
                 MemoryRangeWithNode {
                     range: MemoryRange::new(4 * GB..TB + 2 * GB),
-                    vnode: 0,
+                    vnode: 0
                 },
             ]
         );

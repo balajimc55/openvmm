@@ -671,7 +671,8 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             for gpn in
                 ram_range.range.start() / PAGE_SIZE as u64..ram_range.range.end() / PAGE_SIZE as u64
             {
-                // Find all accepted memory.
+                // Filter to accepted memory.
+                // TODO: conditional check to make sure it doesn't break non-TDX
                 if !inner.encrypted.check_acceptance_bitmap(gpn) {
                     if page_count > 0 {
                         let end_address = protect_start + (page_count * PAGE_SIZE as u64);
@@ -879,5 +880,68 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
 
     fn vtl1_protections_enabled(&self) -> bool {
         self.inner.lock().vtl1_protections_enabled
+    }
+
+    fn check_guest_page_acceptance(&self, gpn: u64) -> Result<(), HvError> {
+
+        if !LAZY_ACCEPT {
+            return Ok(());
+        }
+
+        // Validate gpn in RAM pages
+        let containing_range = self
+            .layout
+            .ram()
+            .iter()
+            .find(|r| r.range.contains_addr(gpn * HV_PAGE_SIZE))
+            .map(|r| r.range);
+
+        if containing_range.is_none() {
+            return Err(HvError::OperationDenied);
+        }
+        let containing_range = containing_range.unwrap();
+
+        // Prevent visibility changes while VTL protections are being
+        // applied. This does not need to be synchronized against other
+        // threads performing VTL protection changes; whichever thread
+        // finishes last will control the outcome.
+        let inner = self.inner.lock();
+
+        // Ensure that page is private.
+        if inner.shared.check_shared_bitmap(gpn) {
+            return Err(HvError::OperationDenied);
+        }
+        // Ensure that page has been accepted.
+        if inner.encrypted.check_acceptance_bitmap(gpn) {
+            return Ok(());
+        }
+
+        // Attempt to accept the page as large page.
+        let pages_per_large_page = x86defs::X64_LARGE_PAGE_SIZE / HV_PAGE_SIZE;
+        let mut gpn_base = gpn / pages_per_large_page;
+        let mut gpn_last = gpn_base + pages_per_large_page - 1;
+
+        if gpn_base < containing_range.start_4k_gpn() {
+            gpn_base = containing_range.start_4k_gpn();
+        }
+        if gpn_last > containing_range.end_4k_gpn() {
+            gpn_last = containing_range.end_4k_gpn();
+        }
+
+        for containing_gpn in  ((gpn - 1)..gpn_base).rev() {
+            if inner.shared.check_shared_bitmap(containing_gpn) {
+                gpn_base = containing_gpn + 1;
+                break;
+            }
+        }
+
+        for containing_gpn in  (gpn + 1)..gpn_last {
+            if inner.shared.check_shared_bitmap(containing_gpn) {
+                gpn_last = containing_gpn - 1;
+                break;
+            }
+        }
+
+        Ok(())
     }
 }

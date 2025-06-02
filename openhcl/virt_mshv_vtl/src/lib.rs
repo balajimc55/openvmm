@@ -1427,6 +1427,9 @@ pub trait ProtectIsolatedMemory: Send + Sync {
     /// Whether VTL 1 is prepared to modify vtl protections on lower-vtl memory,
     /// and therefore whether these protections should be enforced.
     fn vtl1_protections_enabled(&self) -> bool;
+
+    /// Checks whether a guest page has been accepted, requesting acceptance if not.
+    fn check_guest_page_acceptance(&self, gpn: u64) -> Result<(), HvError>;
 }
 
 /// Trait for access to TLB flush and lock machinery.
