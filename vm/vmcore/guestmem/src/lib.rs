@@ -1411,6 +1411,8 @@ impl GuestMemory {
         if len == 0 {
             return Ok(());
         }
+
+        // TODO: Should we check for acceptance status here?
         self.run_on_mapping(
             AccessType::Read,
             gpa,

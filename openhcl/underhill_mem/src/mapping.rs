@@ -275,14 +275,14 @@ impl GuestMemoryMappingBuilder {
         }
 
         // Initialize bitmap to zeroes here.
-        if let Some((acceptance_bitmap, true)) = acceptance_bitmap.as_ref().zip(self.bitmap_state) {
+        if let Some((bitmap, true)) = acceptance_bitmap.as_ref().zip(self.bitmap_state) {
             for entry in memory_layout.ram() {
                 let start_gpn = entry.range.start() / PAGE_SIZE as u64;
                 let gpn_count = entry.range.len() / PAGE_SIZE as u64;
                 assert_eq!(entry.range.start() % 8, 0);
                 assert_eq!(gpn_count % 8, 0);
-                acceptance_bitmap
-                    .fill_at(start_gpn as usize / 8, 0xff, gpn_count as usize / 8)
+                bitmap
+                    .fill_at(start_gpn as usize / 8, 0, gpn_count as usize / 8)
                     .unwrap();
             }
         }

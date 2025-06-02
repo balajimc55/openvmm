@@ -49,6 +49,8 @@ use x86defs::tdx::GpaVmAttributesMask;
 use x86defs::tdx::TdgMemPageAttrWriteR8;
 use x86defs::tdx::TdgMemPageGpaAttr;
 
+const LAZY_ACCEPT: bool = true;
+
 /// Error querying vtl permissions on a page
 #[derive(Debug, Error)]
 pub enum QueryVtlPermissionsError {
@@ -669,10 +671,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             for gpn in
                 ram_range.range.start() / PAGE_SIZE as u64..ram_range.range.end() / PAGE_SIZE as u64
             {
-                // TODO GUEST_VSM: for now, use the encrypted mapping to
-                // find all accepted memory. When lazy acceptance exists,
-                // this should track all pages that have been accepted and
-                // should be used instead.
+                // Find all accepted memory.
                 if !inner.encrypted.check_acceptance_bitmap(gpn) {
                     if page_count > 0 {
                         let end_address = protect_start + (page_count * PAGE_SIZE as u64);
@@ -739,6 +738,43 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             .map(|r| r.map(|r| MemoryRange::new(r.start..r.end)))
             .collect::<Result<Vec<_>, _>>()
             .unwrap(); // Ok to unwrap, we've validated the gpns above.
+
+        // Ensure that page has been accepted.
+        if LAZY_ACCEPT {
+            let accept_subrange = |accept_start, accept_end| {
+                let subrange =  MemoryRange::new(accept_start..accept_end);
+                self.acceptor
+                    .accept_vtl0_pages(subrange)
+                    .expect("everything should be in a state where we can accept VTL0 pages");
+                inner.encrypted.update_acceptance_bitmap(subrange, true);
+            };
+    
+            for &range in &ranges {
+                let mut accept_memory = false;
+                let mut accept_start = 0;
+                let mut accept_end = 0;
+                for gpn in range.start() / PAGE_SIZE as u64..range.end() / PAGE_SIZE as u64 {
+                    if !inner.encrypted.check_acceptance_bitmap(gpn) {
+                        accept_end = gpn;
+                        if accept_memory {
+                            continue;
+                        }
+                        accept_start = gpn;
+                        accept_memory = true;
+                    } else {
+                        if accept_memory {
+                            accept_subrange(accept_start, accept_end);
+                            accept_memory = false;
+                            accept_start = 0;
+                            accept_end = 0;
+                        }
+                    }
+                }
+                if accept_memory {
+                    accept_subrange(accept_start, range.end());
+                }
+            }
+        }
 
         self.apply_protections_with_overlay_handling(vtl, &ranges, protections)
             .expect("applying vtl protections should succeed");
