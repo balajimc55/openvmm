@@ -69,7 +69,6 @@ impl MemoryMappings {
     }
 }
 
-#[derive(Debug)]
 pub struct Init<'a> {
     pub processor_topology: &'a ProcessorTopology,
     pub isolation: IsolationType,
@@ -82,7 +81,6 @@ pub struct Init<'a> {
     pub maximum_vtl: Vtl,
 }
 
-#[derive(Debug)]
 pub struct BootInit<'a> {
     pub tp: &'a AffinitizedThreadpool,
     pub vtl2_memory: &'a [MemoryRangeWithNode],

@@ -3959,7 +3959,6 @@ version = "0.0.0"
 dependencies = [
  "inspect",
  "mesh_protobuf",
- "parking_lot",
  "thiserror 2.0.12",
 ]
 
@@ -8269,7 +8268,6 @@ dependencies = [
  "inspect",
  "memory_range",
  "mesh_protobuf",
- "parking_lot",
  "safe_intrinsics",
  "thiserror 2.0.12",
  "x86defs",
