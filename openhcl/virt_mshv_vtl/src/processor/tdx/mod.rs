@@ -2008,6 +2008,11 @@ impl UhProcessor<'_, TdxBacked> {
                 // sufficient, as it may be a write access where the page is
                 // protected, but we don't yet support MNF/guest VSM so this is
                 // okay enough.
+                self.cvm_partition()
+                    .isolated_memory_protector
+                    .check_guest_page_acceptance(exit_info.gpa())
+                    .expect("Page acceptance failed");
+
                 let is_readable_ram =
                     self.partition.gm[intercepted_vtl].check_gpa_readable(exit_info.gpa());
                 if is_readable_ram {

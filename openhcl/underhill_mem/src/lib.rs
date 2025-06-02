@@ -454,6 +454,44 @@ impl HardwareIsolatedMemoryProtector {
 
         Ok(())
     }
+
+    fn accept_unaccepted_guest_pages (
+        &self,
+        range: &MemoryRange,
+        bitmap: &Arc<GuestMemoryMapping>,
+    ) {
+        let accept_subrange = |accept_start, accept_end| {
+            let subrange =  MemoryRange::new(accept_start..accept_end);
+            self.acceptor
+                .accept_vtl0_pages(subrange)
+                .expect("everything should be in a state where we can accept VTL0 pages");
+            bitmap.update_acceptance_bitmap(subrange, true);
+        };
+
+        let mut accept_memory = false;
+        let mut accept_start = 0;
+        let mut accept_end = 0;
+        for gpn in range.start() / PAGE_SIZE as u64..range.end() / PAGE_SIZE as u64 {
+            if !bitmap.check_acceptance_bitmap(gpn) {
+                accept_end = gpn;
+                if accept_memory {
+                    continue;
+                }
+                accept_start = gpn;
+                accept_memory = true;
+            } else {
+                if accept_memory {
+                    accept_subrange(accept_start, accept_end);
+                    accept_memory = false;
+                    accept_start = 0;
+                    accept_end = 0;
+                }
+            }
+        }
+        if accept_memory {
+            accept_subrange(accept_start, range.end());
+        }
+    }
 }
 
 impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
@@ -742,38 +780,8 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
 
         // Ensure that page has been accepted.
         if LAZY_ACCEPT {
-            let accept_subrange = |accept_start, accept_end| {
-                let subrange =  MemoryRange::new(accept_start..accept_end);
-                self.acceptor
-                    .accept_vtl0_pages(subrange)
-                    .expect("everything should be in a state where we can accept VTL0 pages");
-                inner.encrypted.update_acceptance_bitmap(subrange, true);
-            };
-    
             for &range in &ranges {
-                let mut accept_memory = false;
-                let mut accept_start = 0;
-                let mut accept_end = 0;
-                for gpn in range.start() / PAGE_SIZE as u64..range.end() / PAGE_SIZE as u64 {
-                    if !inner.encrypted.check_acceptance_bitmap(gpn) {
-                        accept_end = gpn;
-                        if accept_memory {
-                            continue;
-                        }
-                        accept_start = gpn;
-                        accept_memory = true;
-                    } else {
-                        if accept_memory {
-                            accept_subrange(accept_start, accept_end);
-                            accept_memory = false;
-                            accept_start = 0;
-                            accept_end = 0;
-                        }
-                    }
-                }
-                if accept_memory {
-                    accept_subrange(accept_start, range.end());
-                }
+                self.accept_unaccepted_guest_pages(&range, &inner.encrypted);
             }
         }
 
@@ -928,20 +936,26 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             gpn_last = containing_range.end_4k_gpn();
         }
 
-        for containing_gpn in  ((gpn - 1)..gpn_base).rev() {
-            if inner.shared.check_shared_bitmap(containing_gpn) {
-                gpn_base = containing_gpn + 1;
-                break;
+        if gpn > gpn_base {
+            for containing_gpn in  ((gpn - 1)..gpn_base).rev() {
+                if inner.shared.check_shared_bitmap(containing_gpn) {
+                    gpn_base = containing_gpn + 1;
+                    break;
+                }
+            }
+        }
+        if gpn < gpn_last {
+            for containing_gpn in  (gpn + 1)..gpn_last {
+                if inner.shared.check_shared_bitmap(containing_gpn) {
+                    gpn_last = containing_gpn - 1;
+                    break;
+                }
             }
         }
 
-        for containing_gpn in  (gpn + 1)..gpn_last {
-            if inner.shared.check_shared_bitmap(containing_gpn) {
-                gpn_last = containing_gpn - 1;
-                break;
-            }
-        }
-
+        self.accept_unaccepted_guest_pages(
+            &MemoryRange::new(gpn_base * HV_PAGE_SIZE..gpn_last * HV_PAGE_SIZE),
+             &inner.encrypted);
         Ok(())
     }
 }
