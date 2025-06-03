@@ -2010,7 +2010,7 @@ impl UhProcessor<'_, TdxBacked> {
                 // okay enough.
                 self.cvm_partition()
                     .isolated_memory_protector
-                    .check_guest_page_acceptance(exit_info.gpa())
+                    .check_guest_page_acceptance(exit_info.gpa() / HV_PAGE_SIZE)
                     .expect("Page acceptance failed");
 
                 let is_readable_ram =

@@ -257,7 +257,6 @@ impl GuestMemoryMappingBuilder {
                     .alloc(bitmap_page_start * PAGE_SIZE, page_count * PAGE_SIZE)
                     .map_err(MappingError::BitmapAlloc)?;
             }
-
             tracing::trace!(?entry, "mapped memory map entry");
         }
 

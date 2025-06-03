@@ -465,6 +465,12 @@ impl HardwareIsolatedMemoryProtector {
             self.acceptor
                 .accept_vtl0_pages(subrange)
                 .expect("everything should be in a state where we can accept VTL0 pages");
+
+            // TODO: Should this be inside hardware_isolated conditional?
+            self.acceptor
+                .apply_initial_lower_vtl_protections(subrange)
+                .unwrap();
+
             bitmap.update_acceptance_bitmap(subrange, true);
         };
 
