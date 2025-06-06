@@ -147,11 +147,11 @@ impl GuestMemoryBackingError {
 
 #[derive(Debug, Error)]
 #[error("no memory at address")]
-struct OutOfRange;
+pub struct OutOfRange;
 
 #[derive(Debug, Error)]
 #[error("memory not lockable")]
-struct NotLockable;
+pub struct NotLockable;
 
 #[derive(Debug, Error)]
 #[error("no fallback for this operation")]
@@ -159,11 +159,11 @@ struct NoFallback;
 
 #[derive(Debug, Error)]
 #[error("the specified page is not mapped")]
-struct NotMapped;
+pub struct NotMapped;
 
 #[derive(Debug, Error)]
 #[error("page inaccessible in bitmap")]
-struct BitmapFailure;
+pub struct BitmapFailure;
 
 /// A trait for a guest memory backing that is fully available via a virtual
 /// address mapping, as opposed to the fallback functions such as
@@ -361,6 +361,8 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
         write: bool,
         bitmap_failure: bool,
     ) -> PageFaultAction {
+        tracing::debug!(address, len, bitmap_failure, " page_fault ");
+
         let _ = (address, len, write);
         if bitmap_failure {
             PageFaultAction::Fail(BitmapFailure.into())
@@ -512,6 +514,7 @@ unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for Arc<T> {
         write: bool,
         bitmap_failure: bool,
     ) -> PageFaultAction {
+        tracing::debug!(addr, len, "page_fault 3");
         self.as_ref().page_fault(addr, len, write, bitmap_failure)
     }
 
@@ -649,6 +652,8 @@ unsafe impl GuestMemoryAccess for GuestMemoryAccessRange {
         write: bool,
         bitmap_failure: bool,
     ) -> PageFaultAction {
+        tracing::debug!(address, len, " page_fault 2 ");
+
         let address = self
             .adjust_range(address, len as u64)
             .expect("the caller should have validated the range was in the mapping");
@@ -740,6 +745,7 @@ struct MultiRegionGuestMemoryAccess<T> {
 
 impl<T> MultiRegionGuestMemoryAccess<T> {
     fn region(&self, gpa: u64, len: u64) -> Result<(&T, u64), GuestMemoryBackingError> {
+        tracing::debug!("multi region");
         let (i, offset) = self.region_def.region(gpa, len)?;
         let imp = self.imps[i]
             .as_ref()
@@ -772,6 +778,30 @@ unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for MultiRegionGuestMemoryAc
         region.subrange(offset_in_region, len, allow_preemptive_locking)
     }
 
+    fn page_fault(
+        &self,
+        address: u64,
+        len: usize,
+        write: bool,
+        bitmap_failure: bool,
+    ) -> PageFaultAction {
+        tracing::debug!(address, len, bitmap_failure, " multi-region page_fault ");
+
+        let _ = (address, len, write);
+        if bitmap_failure {
+            PageFaultAction::Fail(BitmapFailure.into())
+        } else {
+            let (i, _) = self.region_def.region(address, len as u64)
+                .expect("the caller should have validated the range was in the mapping");
+            let imp = self.imps[i]
+                .as_ref()
+                .ok_or(GuestMemoryBackingError::new(address, OutOfRange))
+                .expect("the caller should have validated the range was in the mapping");
+
+            imp.page_fault(address, len, write, false)
+        }
+    }
+    
     unsafe fn read_fallback(
         &self,
         addr: u64,
@@ -1000,6 +1030,7 @@ impl GuestMemory {
 
     fn new_inner(debug_name: Arc<str>, imp: impl GuestMemoryAccess, allocated: bool) -> Self {
         let regions = vec![MemoryRegion::new(&imp)];
+        tracing::debug!(" new_inner ");
         Self {
             inner: Arc::new(GuestMemoryInner {
                 imp,
@@ -1035,7 +1066,8 @@ impl GuestMemory {
         region_size: u64,
         mut imps: Vec<Option<impl GuestMemoryAccess>>,
     ) -> Result<Self, MultiRegionError> {
-        // Install signal handlers on unix.
+        tracing::debug!(" multi_region_inner ");
+         // Install signal handlers on unix.
         sparse_mmap::initialize_try_copy();
 
         if !region_size.is_power_of_two() {
@@ -1292,6 +1324,8 @@ impl GuestMemory {
             return fallback(&mut param);
         };
 
+        tracing::debug!(gpa, len, " run_on_mapping ");
+
         // Try until the fault fails to resolve.
         loop {
             match f(&mut param, mapping) {
@@ -1329,6 +1363,9 @@ impl GuestMemory {
         if len == 0 {
             return Ok(());
         }
+
+        tracing::debug!(gpa, len, " write_ptr ");
+
         self.run_on_mapping(
             AccessType::Write,
             gpa,
@@ -1411,6 +1448,8 @@ impl GuestMemory {
         if len == 0 {
             return Ok(());
         }
+
+        tracing::debug!(gpa, len, " readptr ");
 
         // TODO: Should we check for acceptance status here?
         self.run_on_mapping(

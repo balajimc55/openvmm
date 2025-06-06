@@ -168,6 +168,7 @@ pub struct NoMapping(MemoryRange);
 
 impl MapperInner {
     async fn request_mapping(&self, range: MemoryRange, writable: bool) -> Result<(), NoMapping> {
+        tracing::info!("request_mapping for va_mapper");
         let (send, recv) = mesh::oneshot();
         self.waiters
             .lock()
@@ -195,6 +196,7 @@ impl VaMapper {
         len: u64,
         remote_process: Option<RemoteProcess>,
     ) -> Result<Self, VaMapperError> {
+        tracing::info!("VaMapper::new called");
         let mapping = match &remote_process {
             None => SparseMapping::new(len as usize),
             Some(process) => match process {
@@ -284,6 +286,7 @@ unsafe impl GuestMemoryAccess for VaMapper {
         write: bool,
         bitmap_failure: bool,
     ) -> PageFaultAction {
+        tracing::info!(address, len, "page_fault for VA mapper");
         assert!(!bitmap_failure, "bitmaps are not used");
         // `block_on` is OK to call here (will not deadlock) because this is
         // never called from the page fault handler thread or any threads it

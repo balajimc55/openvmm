@@ -4,11 +4,15 @@
 // UNSAFETY: Implementing GuestMemoryAccess.
 #![expect(unsafe_code)]
 
+use crate::MemoryAcceptor;
 use crate::MshvVtlWithPolicy;
 use crate::RegistrationError;
 use crate::registrar::MemoryRegistrar;
+use guestmem::BitmapFailure;
 use guestmem::GuestMemoryAccess;
 use guestmem::GuestMemoryBackingError;
+use guestmem::NotMapped;
+use guestmem::PageFaultAction;
 use guestmem::PAGE_SIZE;
 use hcl::ioctl::Mshv;
 use hcl::ioctl::MshvVtlLow;
@@ -17,11 +21,13 @@ use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use sparse_mmap::SparseMapping;
 use std::ptr::NonNull;
+use std::sync::Arc;
 use thiserror::Error;
+use virt_mshv_vtl::ProtectIsolatedMemory;
 use vm_topology::memory::MemoryLayout;
 
 /// An implementation of a [`GuestMemoryAccess`] trait for Underhill VMs.
-#[derive(Debug, Inspect)]
+#[derive(Inspect)]
 pub struct GuestMemoryMapping {
     #[inspect(skip)]
     mapping: SparseMapping,
@@ -35,6 +41,13 @@ pub struct GuestMemoryMapping {
     acceptance_bitmap: Option<SparseMapping>,
     #[inspect(skip)]
     acceptance_bitmap_lock: Mutex<()>,
+    #[inspect(skip)]
+    _acceptor: Option<Arc<MemoryAcceptor>>,
+    #[inspect(skip)]
+    mshv_vtl_low: Arc<MshvVtlLow>,
+    physical_address_base: u64,
+    #[inspect(skip)]
+    protector: Mutex<Option<Arc<dyn ProtectIsolatedMemory>>>,
 }
 
 /// Error constructing a [`GuestMemoryMapping`].
@@ -145,8 +158,9 @@ impl GuestMemoryMappingBuilder {
     /// initialized to the provided state.
     pub fn build(
         &self,
-        mshv_vtl_low: &MshvVtlLow,
+        mshv_vtl_low: Arc<MshvVtlLow>,
         memory_layout: &MemoryLayout,
+        _acceptor: Option<Arc<MemoryAcceptor>>,
     ) -> Result<GuestMemoryMapping, MappingError> {
         // Calculate the file offset within the `mshv_vtl_low` file.
         let file_starting_offset = self.physical_address_base
@@ -199,15 +213,17 @@ impl GuestMemoryMappingBuilder {
 
             tracing::trace!(base_addr, file_offset, "mapping lower ram");
 
-            mapping
-                .map_file(
-                    base_addr as usize,
-                    entry.range.len() as usize,
-                    mshv_vtl_low.get(),
-                    file_offset,
-                    true,
-                )
-                .map_err(MappingError::Map)?;
+            if _acceptor.is_none() {
+                mapping
+                    .map_file(
+                        base_addr as usize,
+                        entry.range.len() as usize,
+                        mshv_vtl_low.get(),
+                        file_offset,
+                        true,
+                    )
+                    .map_err(MappingError::Map)?;
+            }
 
             if let Some(shared_bitmap) = &shared_bitmap {
                 // To simplify bitmap implementation, require that all memory
@@ -310,6 +326,10 @@ impl GuestMemoryMappingBuilder {
             registrar,
             acceptance_bitmap,
             acceptance_bitmap_lock: Default::default(),
+            _acceptor,
+            mshv_vtl_low,
+            physical_address_base: self.physical_address_base,
+            protector: Mutex::new(None),
         })
     }
 }
@@ -385,6 +405,28 @@ impl GuestMemoryMapping {
     }
 
     pub fn update_acceptance_bitmap(&self, range: MemoryRange, state: bool) {
+
+        let base_addr = range.start();
+        let file_offset = self.physical_address_base.checked_add(base_addr).unwrap();
+        
+        tracing::info!(
+            "update_acceptance_bitmap: range = [{:#x}, {:#x})",
+            range.start(),
+            range.end()
+        );
+        // Update mapping
+        self.mapping
+            .map_file(
+                base_addr as usize,
+                range.len() as usize,
+                self.mshv_vtl_low.get(),
+                file_offset,
+                true,
+            )
+            .map_err(MappingError::Map)
+            .expect("failed to map acceptance bitmap range");
+
+        tracing::debug!("update_acceptance_bitmap post mapping update");
         self.update_bitmap(
             range,
             state,
@@ -400,6 +442,11 @@ impl GuestMemoryMapping {
         self.mapping
             .fill_at(range.start() as usize, 0, range.len() as usize)
     }
+
+    pub fn set_protector(&self, imp: Arc<dyn ProtectIsolatedMemory>) {
+            let mut protector = self.protector.lock();
+            *protector = Some(imp);
+        }
 }
 
 /// SAFETY: Implementing the `GuestMemoryAccess` contract, including the
@@ -435,6 +482,7 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
     }
 
     fn access_bitmap(&self) -> Option<guestmem::BitmapInfo> {
+        tracing::debug!(" access_bitmap mapping.rs ");
         self.shared_bitmap.as_ref().map(|bitmap| {
             let ptr = NonNull::new(bitmap.as_ptr().cast()).unwrap();
             guestmem::BitmapInfo {
@@ -444,5 +492,41 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
                 bit_offset: 0,
             }
         })
+    }
+
+    fn page_fault(
+        &self,
+        address: u64,
+        len: usize,
+        write: bool,
+        bitmap_failure: bool,
+    ) -> PageFaultAction {
+
+        tracing::debug!(address, len, bitmap_failure, " implemented page_fault");
+
+        let _ = (address, len, write);
+        if bitmap_failure {
+            PageFaultAction::Fail(BitmapFailure.into())
+        } else {
+            let guard = self.protector.lock();
+            let protector = guard
+                .as_ref()
+                .expect("protector must be set before page fault handling");
+
+            let gpn_start = address / PAGE_SIZE as u64;
+            let gpn_end = (address + len as u64) / PAGE_SIZE as u64 + 1;
+            let range = MemoryRange::new(gpn_start * PAGE_SIZE as u64..gpn_end * PAGE_SIZE as u64);
+
+            match protector.accept_unaccepted_guest_pages_pf(&range) {
+                Ok(true) => {
+                    tracing::debug!("page fault accepted");
+                    return PageFaultAction::Retry;
+                }
+                _ => {
+                    tracing::debug!("page fault not accepted");
+                    return PageFaultAction::Fail(NotMapped.into());
+                }
+            }
+        }
     }
 }

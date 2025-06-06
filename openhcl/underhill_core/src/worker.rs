@@ -175,7 +175,7 @@ use vmotherboard::ChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetDevices;
 use vmotherboard::options::BaseChipsetFoundation;
 use zerocopy::FromZeros;
-
+const LAZY_ACCEPT: bool = false;
 pub(crate) const PM_BASE: u16 = 0x400;
 pub(crate) const SYSTEM_IRQ_ACPI: u32 = 9;
 pub(crate) const WDAT_PORT: u16 = 0x30;
@@ -1508,21 +1508,29 @@ async fn new_underhill_vm(
             .context("failed to restore global dma manager")?;
     }
 
+    tracing::error!("new_underhill_vm - checkpoint 1");
     // Test with the highest VTL for which we have a GuestMemory object
     let highest_vtl_gm = gm.vtl1().unwrap_or(gm.vtl0());
+    tracing::error!("new_underhill_vm - checkpoint 2");
+   
+    if !LAZY_ACCEPT {
+        // Perform a quick validation to make sure each range is appropriately accessible.
+        for range in mem_layout.ram() {
+            let gpa = range.range.start();
+            tracing::error!(gpa, "new_underhill_vm: Reading at ");
+            // Standard RAM is accessible.
+            highest_vtl_gm
+                .read_plain::<u8>(gpa)
+                .with_context(|| format!("failed to read RAM at {gpa:#x}"))?;
 
-    // Perform a quick validation to make sure each range is appropriately accessible.
-    for range in mem_layout.ram() {
-        let gpa = range.range.start();
-        // Standard RAM is accessible.
-        highest_vtl_gm
-            .read_plain::<u8>(gpa)
-            .with_context(|| format!("failed to read RAM at {gpa:#x}"))?;
-
-        // It is not initially accessible above VTOM.
-        if let Some(vtom) = vtom {
-            if highest_vtl_gm.read_plain::<u8>(gpa | vtom).is_ok() {
-                anyhow::bail!("RAM at {gpa:#x} is accessible above VTOM");
+            tracing::error!(gpa, "new_underhill_vm: Read complete for ");
+            // It is not initially accessible above VTOM.
+            if let Some(vtom) = vtom {
+                tracing::error!(gpa, "new_underhill_vm: Reading at VTOM gpa  ");
+                if highest_vtl_gm.read_plain::<u8>(gpa | vtom).is_ok() {
+                    anyhow::bail!("RAM at {gpa:#x} is accessible above VTOM");
+                }
+                tracing::error!(gpa, "new_underhill_vm: Reading VTOM successful for  ");            
             }
         }
     }

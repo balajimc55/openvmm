@@ -186,6 +186,7 @@ impl GpaVtlPermissions {
 ///
 /// FUTURE: this should go away as a separate object once all the logic is moved
 /// into this crate.
+#[derive(Debug)]
 pub struct MemoryAcceptor {
     mshv_hvcall: MshvHvcall,
     mshv_vtl: MshvVtl,
@@ -580,7 +581,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             // Unaccept the pages so that the hypervisor can reclaim them.
             for &range in &ranges {
                 self.acceptor.unaccept_vtl0_pages(range);
-                inner.encrypted.update_acceptance_bitmap(range, false);
+                //inner.encrypted.update_acceptance_bitmap(range, false);
             }
         }
 
@@ -613,7 +614,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                 if self.acceptor.isolation == IsolationType::Snp {
                     inner.encrypted.zero_range(range).expect("VTL 2 should have access to lower VTL memory and the page should be accepted");
                 }
-                inner.encrypted.update_acceptance_bitmap(range, true);
+                //inner.encrypted.update_acceptance_bitmap(range, true);
             }
         }
 
@@ -896,10 +897,10 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         self.inner.lock().vtl1_protections_enabled
     }
 
-    fn check_guest_page_acceptance(&self, gpn: u64) -> Result<(), HvError> {
+    fn check_guest_page_acceptance(&self, gpn: u64) -> Result<bool, HvError> {
 
         if !LAZY_ACCEPT {
-            return Ok(());
+            return Ok(false);
         }
 
         // Validate gpn in RAM pages
@@ -927,7 +928,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         }
         // Ensure that page has been accepted.
         if inner.encrypted.check_acceptance_bitmap(gpn) {
-            return Ok(());
+            return Ok(false);
         }
 
         // Attempt to accept the page as large page.
@@ -962,6 +963,76 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         self.accept_unaccepted_guest_pages(
             &MemoryRange::new(gpn_base * HV_PAGE_SIZE..gpn_last * HV_PAGE_SIZE),
              &inner.encrypted);
-        Ok(())
+        Ok(true)
     }
+
+    fn accept_unaccepted_guest_pages_pf (
+        &self,
+        range: &MemoryRange,
+    ) -> Result<bool, ()> {
+        tracing::debug!(
+            "accept_unaccepted_guest_pages_pf ENTRY: start = {}, end = {}",
+            range.start(),
+            range.end()
+        );
+        let mut accepted = false;
+        let inner = self.inner.lock();
+        let accept_subrange = |accept_start, accept_end| {
+            tracing::debug!(
+                "accept_unaccepted_guest_pages_pf accept_subrange: start = {}, end = {}",
+                accept_start,
+                accept_end
+            );
+            let subrange =  MemoryRange::new(accept_start * PAGE_SIZE as u64..accept_end * PAGE_SIZE as u64);
+            self.acceptor
+                .accept_vtl0_pages(subrange)
+                .expect("everything should be in a state where we can accept VTL0 pages");
+
+            // TODO: Should this be inside hardware_isolated conditional?
+            self.acceptor
+                .apply_initial_lower_vtl_protections(subrange)
+                .unwrap();
+
+            inner.encrypted.update_acceptance_bitmap(subrange, true);
+        };
+
+        let mut accept_memory = false;
+        let mut accept_start = 0;
+        for gpn in range.start() / PAGE_SIZE as u64..range.end() / PAGE_SIZE as u64 {
+            tracing::debug!(
+                "accept_unaccepted_guest_pages_pf LOOP: gpn = {}, accept_start = {}",
+                gpn,
+                accept_start
+            );
+            if !inner.encrypted.check_acceptance_bitmap(gpn) {
+                tracing::debug!(
+                    "accept_unaccepted_guest_pages_pf: unaccepted page, accept_start = {}",
+                    accept_start,
+                );
+                if accept_memory {
+                    continue;
+                }
+                accept_start = gpn;
+                accept_memory = true;
+            } else {
+                tracing::debug!(
+                    "accept_unaccepted_guest_pages_pf: page already accepted, accept_start = {}, accept_end = {}",
+                    accept_start,
+                    gpn
+                );
+                if accept_memory {
+                    accept_subrange(accept_start, gpn);
+                    accept_memory = false;
+                    accepted = true;
+                }
+            }
+        }
+        if accept_memory {
+            accept_subrange(accept_start, range.end() / PAGE_SIZE as u64);
+            accepted = true;
+        }
+        return Ok(accepted);
+    }
+
+
 }
