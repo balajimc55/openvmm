@@ -2664,6 +2664,7 @@ dependencies = [
  "pal_event",
  "sparse_mmap",
  "thiserror 2.0.12",
+ "tracing",
  "zerocopy 0.8.24",
 ]
 

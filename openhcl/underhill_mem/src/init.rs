@@ -27,6 +27,7 @@ use vm_topology::memory::MemoryLayout;
 use vm_topology::memory::MemoryRangeWithNode;
 use vm_topology::processor::ProcessorTopology;
 
+const LAZY_ACCEPT: bool = true;
 #[derive(Inspect)]
 pub struct MemoryMappings {
     vtl0: Arc<GuestMemoryMapping>,
@@ -128,54 +129,55 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 }
             }
 
-            // Accept the memory that was not accepted by the boot loader.
-            // FUTURE: do this lazily.
-            let vp_count = std::cmp::max(1, params.processor_topology.vp_count() - 1);
-            let accept_subrange = move |subrange| {
-                acceptor.accept_vtl0_pages(subrange).unwrap();
-                if hardware_isolated {
-                    // For VBS-isolated VMs, the VTL protections are set as
-                    // part of the accept call.
-                    acceptor
-                        .apply_initial_lower_vtl_protections(subrange)
-                        .unwrap();
-                }
-            };
-            tracing::debug!("Accepting VTL0 memory");
-            std::thread::scope(|scope| {
-                for source_range in memory_range::subtract_ranges(ram, accepted_ranges) {
-                    validated_ranges.push(source_range);
-
-                    // Chunks must be 2mb aligned
-                    let two_mb = 2 * 1024 * 1024;
-                    let mut range = source_range.aligned_subrange(two_mb);
-                    if !range.is_empty() {
-                        let chunk_size = (range.page_count_2m().div_ceil(vp_count as u64)) * two_mb;
-                        let chunk_count = range.len().div_ceil(chunk_size);
-
-                        for _ in 0..chunk_count {
-                            let subrange;
-                            (subrange, range) = if range.len() >= chunk_size {
-                                range.split_at_offset(chunk_size)
-                            } else {
-                                (range, MemoryRange::EMPTY)
-                            };
-                            scope.spawn(move || accept_subrange(subrange));
-                        }
-                        assert!(range.is_empty());
+            if !LAZY_ACCEPT {
+                // Accept the memory that was not accepted by the boot loader.
+                let vp_count = std::cmp::max(1, params.processor_topology.vp_count() - 1);
+                let accept_subrange = move |subrange| {
+                    acceptor.accept_vtl0_pages(subrange).unwrap();
+                    if hardware_isolated {
+                        // For VBS-isolated VMs, the VTL protections are set as
+                        // part of the accept call.
+                        acceptor
+                            .apply_initial_lower_vtl_protections(subrange)
+                            .unwrap();
                     }
+                };
+                tracing::debug!("Accepting VTL0 memory");
+                std::thread::scope(|scope| {
+                    for source_range in memory_range::subtract_ranges(ram, accepted_ranges) {
+                        validated_ranges.push(source_range);
 
-                    // Now accept whatever wasn't aligned on the edges
-                    scope.spawn(move || {
-                        for unaligned_subrange in memory_range::subtract_ranges(
-                            [source_range],
-                            [source_range.aligned_subrange(two_mb)],
-                        ) {
-                            accept_subrange(unaligned_subrange);
+                        // Chunks must be 2mb aligned
+                        let two_mb = 2 * 1024 * 1024;
+                        let mut range = source_range.aligned_subrange(two_mb);
+                        if !range.is_empty() {
+                            let chunk_size = (range.page_count_2m().div_ceil(vp_count as u64)) * two_mb;
+                            let chunk_count = range.len().div_ceil(chunk_size);
+
+                            for _ in 0..chunk_count {
+                                let subrange;
+                                (subrange, range) = if range.len() >= chunk_size {
+                                    range.split_at_offset(chunk_size)
+                                } else {
+                                    (range, MemoryRange::EMPTY)
+                                };
+                                scope.spawn(move || accept_subrange(subrange));
+                            }
+                            assert!(range.is_empty());
                         }
-                    });
-                }
-            });
+
+                        // Now accept whatever wasn't aligned on the edges
+                        scope.spawn(move || {
+                            for unaligned_subrange in memory_range::subtract_ranges(
+                                [source_range],
+                                [source_range.aligned_subrange(two_mb)],
+                            ) {
+                                accept_subrange(unaligned_subrange);
+                            }
+                        });
+                    }
+                });
+            }
         }
     }
 
@@ -184,7 +186,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
     // TODO: don't we possibly need to unaccept these pages for SNP? Or are
     // we assuming they were not in the boot loader's pre-accepted pages.
     if let Some(acceptor) = &acceptor {
-        tracing::debug!("Making shared pool pages shared");
+        tracing::error!("Making shared pool pages shared");
         for range in params.shared_pool {
             acceptor
                 .modify_gpa_visibility(
@@ -196,7 +198,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
     }
 
     // Map lower VTL memory.
-    let gpa_fd = MshvVtlLow::new().context("failed to open /dev/mshv_vtl_low")?;
+    let gpa_fd = Arc::new(MshvVtlLow::new().context("failed to open /dev/mshv_vtl_low")?);
 
     let gm = if hardware_isolated {
         assert!(params.vtl0_alias_map_bit.is_none());
@@ -207,13 +209,17 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         // Do not register this mapping with the kernel. It will not be safe for
         // use with syscalls that expect virtual addresses to be in
         // kernel-registered RAM.
-        tracing::debug!("Building VTL0 memory map");
+        tracing::error!("Building VTL0 memory map");
         let vtl0_mapping = Arc::new({
             let _span = tracing::info_span!("map_vtl0_memory").entered();
             GuestMemoryMapping::builder(0)
                 .dma_base_address(None) // prohibit direct DMA attempts until TDISP is supported
                 .use_bitmap(Some(true))
-                .build(&gpa_fd, params.mem_layout)
+                .build(
+                    gpa_fd.clone(),
+                    params.mem_layout,
+                    Some(acceptor.as_ref().unwrap().clone())
+                )
                 .context("failed to map vtl0 memory")?
         });
 
@@ -280,7 +286,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         // confused about shared memory, and our current use of kernel-mode
         // guest memory access is limited to low-perf paths where we can use
         // bounce buffering.
-        tracing::debug!("Building shared memory map");
+        tracing::error!("Building shared memory map");
         let shared_mapping = Arc::new({
             let _span = tracing::info_span!("map_shared_memory").entered();
             GuestMemoryMapping::builder(shared_offset)
@@ -288,19 +294,37 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 .use_bitmap(Some(false))
                 .ignore_registration_failure(params.boot_init.is_none())
                 .dma_base_address(Some(dma_base_address))
-                .build(&gpa_fd, params.complete_memory_layout)
+                .build(gpa_fd.clone(), params.complete_memory_layout, None)
                 .context("failed to map shared memory")?
         });
 
         // Update the shared mapping bitmap for pages used by the shared
         // visibility pool to be marked as shared, since by default pages are
         // marked as no-access in the bitmap.
-        tracing::debug!("Updating shared mapping bitmaps");
+        tracing::error!("Updating shared mapping bitmaps");
         for range in params.shared_pool {
-            shared_mapping.update_bitmap(range.range, true);
+            shared_mapping.update_shared_bitmap(range.range, true);
         }
 
-        tracing::debug!("Creating VTL0 guest memory");
+        // Update acceptance bitmap to mark pages already accepted.
+        if let Some(boot_init) = &params.boot_init {
+            let ram = params.mem_layout.ram().iter().map(|r| r.range);
+            let accepted_ranges = boot_init.accepted_regions.iter().copied();
+            if LAZY_ACCEPT {
+                // When lazy acceptance is enabled, only mark pages accepted in boot shim.
+                for range in memory_range::overlapping_ranges(ram.clone(), accepted_ranges.clone())
+                {
+                    vtl0_mapping.update_acceptance_bitmap(range, true);
+                }
+            } else {
+                // Mark entire VTL0 memory as accepted.
+                for range in ram {
+                    vtl0_mapping.update_acceptance_bitmap(range, true);
+                }
+            }
+        }
+
+        tracing::error!("Creating VTL0 guest memory");
         let vtl0_gm = GuestMemory::new_multi_region(
             "vtl0",
             vtom,
@@ -338,7 +362,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         // Untrusted devices can only access shared memory, but they can do so
         // from either alias (below and above vtom). This is consistent with
         // what the IOMMU is programmed with.
-        tracing::debug!("Creating untrusted shared DMA memory");
+        tracing::error!("Creating untrusted shared DMA memory");
         let shared_gm = GuestMemory::new_multi_region(
             "shared",
             vtom,
@@ -355,6 +379,11 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             acceptor.as_ref().unwrap().clone(),
         )) as Arc<dyn ProtectIsolatedMemory>;
 
+        // If set_protector requires mutable access, GuestMemoryMapping should use interior mutability (e.g., Mutex/RwLock) for the protector field.
+        // For example, if GuestMemoryMapping has: protector: Mutex<Option<Arc<dyn ProtectIsolatedMemory>>>
+        vtl0_mapping.set_protector(protector.clone());
+        // If not, you need to redesign set_protector to use interior mutability or set the protector before wrapping in Arc.
+        
         MemoryMappings {
             vtl0: vtl0_mapping,
             vtl1: None,
@@ -377,7 +406,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                     .for_kernel_access(true)
                     .dma_base_address(Some(base_address))
                     .ignore_registration_failure(params.boot_init.is_none())
-                    .build(&gpa_fd, params.mem_layout)
+                    .build(gpa_fd.clone(), params.mem_layout, None)
                     .context("failed to map vtl0 memory")?,
             )
         };
@@ -411,7 +440,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                     .for_kernel_access(true)
                     .dma_base_address(Some(0))
                     .ignore_registration_failure(params.boot_init.is_none())
-                    .build(&gpa_fd, params.mem_layout)
+                    .build(gpa_fd.clone(), params.mem_layout, None)
                     .context("failed to map vtl1 memory")?;
                 Some(Arc::new(vtl1_mapping))
             }
@@ -435,6 +464,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             cvm_memory: None,
         }
     };
+    tracing::error!("End of Init");
     Ok(gm)
 }
 

@@ -49,6 +49,8 @@ use x86defs::tdx::GpaVmAttributesMask;
 use x86defs::tdx::TdgMemPageAttrWriteR8;
 use x86defs::tdx::TdgMemPageGpaAttr;
 
+const LAZY_ACCEPT: bool = true;
+
 /// Error querying vtl permissions on a page
 #[derive(Debug, Error)]
 pub enum QueryVtlPermissionsError {
@@ -184,6 +186,7 @@ impl GpaVtlPermissions {
 ///
 /// FUTURE: this should go away as a separate object once all the logic is moved
 /// into this crate.
+#[derive(Debug)]
 pub struct MemoryAcceptor {
     mshv_hvcall: MshvHvcall,
     mshv_vtl: MshvVtl,
@@ -452,6 +455,50 @@ impl HardwareIsolatedMemoryProtector {
 
         Ok(())
     }
+
+    fn accept_unaccepted_guest_pages (
+        &self,
+        range: &MemoryRange,
+        bitmap: &Arc<GuestMemoryMapping>,
+    ) {
+        let accept_subrange = |accept_start, accept_end| {
+            let subrange =  MemoryRange::new(accept_start..accept_end);
+            self.acceptor
+                .accept_vtl0_pages(subrange)
+                .expect("everything should be in a state where we can accept VTL0 pages");
+
+            // TODO: Should this be inside hardware_isolated conditional?
+            self.acceptor
+                .apply_initial_lower_vtl_protections(subrange)
+                .unwrap();
+
+            bitmap.update_acceptance_bitmap(subrange, true);
+        };
+
+        let mut accept_memory = false;
+        let mut accept_start = 0;
+        let mut accept_end = 0;
+        for gpn in range.start() / PAGE_SIZE as u64..range.end() / PAGE_SIZE as u64 {
+            if !bitmap.check_acceptance_bitmap(gpn) {
+                accept_end = gpn;
+                if accept_memory {
+                    continue;
+                }
+                accept_start = gpn;
+                accept_memory = true;
+            } else {
+                if accept_memory {
+                    accept_subrange(accept_start, accept_end);
+                    accept_memory = false;
+                    accept_start = 0;
+                    accept_end = 0;
+                }
+            }
+        }
+        if accept_memory {
+            accept_subrange(accept_start, range.end());
+        }
+    }
 }
 
 impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
@@ -492,7 +539,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         let gpns = gpns
             .iter()
             .copied()
-            .filter(|&gpn| inner.shared.check_bitmap(gpn) != shared)
+            .filter(|&gpn| inner.shared.check_shared_bitmap(gpn) != shared)
             .collect::<Vec<_>>();
 
         tracing::debug!(
@@ -517,7 +564,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             &inner.shared
         };
         for &range in &ranges {
-            clear_bitmap.update_bitmap(range, false);
+            clear_bitmap.update_shared_bitmap(range, false);
         }
 
         // TODO SNP: flush concurrent accessors.
@@ -534,6 +581,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             // Unaccept the pages so that the hypervisor can reclaim them.
             for &range in &ranges {
                 self.acceptor.unaccept_vtl0_pages(range);
+                //inner.encrypted.update_acceptance_bitmap(range, false);
             }
         }
 
@@ -566,6 +614,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                 if self.acceptor.isolation == IsolationType::Snp {
                     inner.encrypted.zero_range(range).expect("VTL 2 should have access to lower VTL memory and the page should be accepted");
                 }
+                //inner.encrypted.update_acceptance_bitmap(range, true);
             }
         }
 
@@ -576,7 +625,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             &inner.encrypted
         };
         for &range in &ranges {
-            set_bitmap.update_bitmap(range, true);
+            set_bitmap.update_shared_bitmap(range, true);
         }
 
         if !shared {
@@ -627,7 +676,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
 
         // Set GPN sharing status in output.
         for (gpn, host_vis) in gpns.iter().zip(host_visibility.iter_mut()) {
-            *host_vis = if inner.shared.check_bitmap(*gpn) {
+            *host_vis = if inner.shared.check_shared_bitmap(*gpn) {
                 HostVisibilityType::SHARED
             } else {
                 HostVisibilityType::PRIVATE
@@ -667,11 +716,9 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             for gpn in
                 ram_range.range.start() / PAGE_SIZE as u64..ram_range.range.end() / PAGE_SIZE as u64
             {
-                // TODO GUEST_VSM: for now, use the encrypted mapping to
-                // find all accepted memory. When lazy acceptance exists,
-                // this should track all pages that have been accepted and
-                // should be used instead.
-                if !inner.encrypted.check_bitmap(gpn) {
+                // Filter to accepted memory.
+                // TODO: conditional check to make sure it doesn't break non-TDX
+                if !inner.encrypted.check_acceptance_bitmap(gpn) {
                     if page_count > 0 {
                         let end_address = protect_start + (page_count * PAGE_SIZE as u64);
                         ranges.push(MemoryRange::new(protect_start..end_address));
@@ -725,7 +772,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         let inner = self.inner.lock();
 
         // Protections cannot be applied to a host-visible page
-        if gpns.iter().any(|&gpn| inner.shared.check_bitmap(gpn)) {
+        if gpns.iter().any(|&gpn| inner.shared.check_shared_bitmap(gpn)) {
             return Err((HvError::OperationDenied, 0));
         }
 
@@ -737,6 +784,13 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             .map(|r| r.map(|r| MemoryRange::new(r.start..r.end)))
             .collect::<Result<Vec<_>, _>>()
             .unwrap(); // Ok to unwrap, we've validated the gpns above.
+
+        // Ensure that page has been accepted.
+        if LAZY_ACCEPT {
+            for &range in &ranges {
+                self.accept_unaccepted_guest_pages(&range, &inner.encrypted);
+            }
+        }
 
         self.apply_protections_with_overlay_handling(vtl, &ranges, protections)
             .expect("applying vtl protections should succeed");
@@ -842,4 +896,143 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
     fn vtl1_protections_enabled(&self) -> bool {
         self.inner.lock().vtl1_protections_enabled
     }
+
+    fn check_guest_page_acceptance(&self, gpn: u64) -> Result<bool, HvError> {
+
+        if !LAZY_ACCEPT {
+            return Ok(false);
+        }
+
+        // Validate gpn in RAM pages
+        let containing_range = self
+            .layout
+            .ram()
+            .iter()
+            .find(|r| r.range.contains_addr(gpn * HV_PAGE_SIZE))
+            .map(|r| r.range);
+
+        if containing_range.is_none() {
+            return Err(HvError::OperationDenied);
+        }
+        let containing_range = containing_range.unwrap();
+
+        // Prevent visibility changes while VTL protections are being
+        // applied. This does not need to be synchronized against other
+        // threads performing VTL protection changes; whichever thread
+        // finishes last will control the outcome.
+        let inner = self.inner.lock();
+
+        // Ensure that page is private.
+        if inner.shared.check_shared_bitmap(gpn) {
+            return Err(HvError::OperationDenied);
+        }
+        // Ensure that page has been accepted.
+        if inner.encrypted.check_acceptance_bitmap(gpn) {
+            return Ok(false);
+        }
+
+        // Attempt to accept the page as large page.
+        let pages_per_large_page = x86defs::X64_LARGE_PAGE_SIZE / HV_PAGE_SIZE;
+        let mut gpn_base = gpn / pages_per_large_page;
+        let mut gpn_last = gpn_base + pages_per_large_page - 1;
+
+        if gpn_base < containing_range.start_4k_gpn() {
+            gpn_base = containing_range.start_4k_gpn();
+        }
+        if gpn_last > containing_range.end_4k_gpn() {
+            gpn_last = containing_range.end_4k_gpn();
+        }
+
+        if gpn > gpn_base {
+            for containing_gpn in  ((gpn - 1)..gpn_base).rev() {
+                if inner.shared.check_shared_bitmap(containing_gpn) {
+                    gpn_base = containing_gpn + 1;
+                    break;
+                }
+            }
+        }
+        if gpn < gpn_last {
+            for containing_gpn in  (gpn + 1)..gpn_last {
+                if inner.shared.check_shared_bitmap(containing_gpn) {
+                    gpn_last = containing_gpn - 1;
+                    break;
+                }
+            }
+        }
+
+        self.accept_unaccepted_guest_pages(
+            &MemoryRange::new(gpn_base * HV_PAGE_SIZE..gpn_last * HV_PAGE_SIZE),
+             &inner.encrypted);
+        Ok(true)
+    }
+
+    fn accept_unaccepted_guest_pages_pf (
+        &self,
+        range: &MemoryRange,
+    ) -> Result<bool, ()> {
+        tracing::debug!(
+            "accept_unaccepted_guest_pages_pf ENTRY: start = {}, end = {}",
+            range.start(),
+            range.end()
+        );
+        let mut accepted = false;
+        let inner = self.inner.lock();
+        let accept_subrange = |accept_start, accept_end| {
+            tracing::debug!(
+                "accept_unaccepted_guest_pages_pf accept_subrange: start = {}, end = {}",
+                accept_start,
+                accept_end
+            );
+            let subrange =  MemoryRange::new(accept_start * PAGE_SIZE as u64..accept_end * PAGE_SIZE as u64);
+            self.acceptor
+                .accept_vtl0_pages(subrange)
+                .expect("everything should be in a state where we can accept VTL0 pages");
+
+            // TODO: Should this be inside hardware_isolated conditional?
+            self.acceptor
+                .apply_initial_lower_vtl_protections(subrange)
+                .unwrap();
+
+            inner.encrypted.update_acceptance_bitmap(subrange, true);
+        };
+
+        let mut accept_memory = false;
+        let mut accept_start = 0;
+        for gpn in range.start() / PAGE_SIZE as u64..range.end() / PAGE_SIZE as u64 {
+            tracing::debug!(
+                "accept_unaccepted_guest_pages_pf LOOP: gpn = {}, accept_start = {}",
+                gpn,
+                accept_start
+            );
+            if !inner.encrypted.check_acceptance_bitmap(gpn) {
+                tracing::debug!(
+                    "accept_unaccepted_guest_pages_pf: unaccepted page, accept_start = {}",
+                    accept_start,
+                );
+                if accept_memory {
+                    continue;
+                }
+                accept_start = gpn;
+                accept_memory = true;
+            } else {
+                tracing::debug!(
+                    "accept_unaccepted_guest_pages_pf: page already accepted, accept_start = {}, accept_end = {}",
+                    accept_start,
+                    gpn
+                );
+                if accept_memory {
+                    accept_subrange(accept_start, gpn);
+                    accept_memory = false;
+                    accepted = true;
+                }
+            }
+        }
+        if accept_memory {
+            accept_subrange(accept_start, range.end() / PAGE_SIZE as u64);
+            accepted = true;
+        }
+        return Ok(accepted);
+    }
+
+
 }
