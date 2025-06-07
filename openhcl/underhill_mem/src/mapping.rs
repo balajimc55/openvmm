@@ -44,7 +44,7 @@ pub struct GuestMemoryMapping {
     #[inspect(skip)]
     _acceptor: Option<Arc<MemoryAcceptor>>,
     #[inspect(skip)]
-    mshv_vtl_low: Arc<MshvVtlLow>,
+    _mshv_vtl_low: Arc<MshvVtlLow>,
     physical_address_base: u64,
     #[inspect(skip)]
     protector: Mutex<Option<Arc<dyn ProtectIsolatedMemory>>>,
@@ -158,7 +158,7 @@ impl GuestMemoryMappingBuilder {
     /// initialized to the provided state.
     pub fn build(
         &self,
-        mshv_vtl_low: Arc<MshvVtlLow>,
+        _mshv_vtl_low: Arc<MshvVtlLow>,
         memory_layout: &MemoryLayout,
         _acceptor: Option<Arc<MemoryAcceptor>>,
     ) -> Result<GuestMemoryMapping, MappingError> {
@@ -213,17 +213,17 @@ impl GuestMemoryMappingBuilder {
 
             tracing::trace!(base_addr, file_offset, "mapping lower ram");
 
-            if _acceptor.is_none() {
+//            if _acceptor.is_none() {
                 mapping
                     .map_file(
                         base_addr as usize,
                         entry.range.len() as usize,
-                        mshv_vtl_low.get(),
+                        _mshv_vtl_low.get(),
                         file_offset,
                         true,
                     )
                     .map_err(MappingError::Map)?;
-            }
+//            }
 
             if let Some(shared_bitmap) = &shared_bitmap {
                 // To simplify bitmap implementation, require that all memory
@@ -327,7 +327,7 @@ impl GuestMemoryMappingBuilder {
             acceptance_bitmap,
             acceptance_bitmap_lock: Default::default(),
             _acceptor,
-            mshv_vtl_low,
+            _mshv_vtl_low,
             physical_address_base: self.physical_address_base,
             protector: Mutex::new(None),
         })
@@ -406,14 +406,15 @@ impl GuestMemoryMapping {
 
     pub fn update_acceptance_bitmap(&self, range: MemoryRange, state: bool) {
 
-        let base_addr = range.start();
-        let file_offset = self.physical_address_base.checked_add(base_addr).unwrap();
+        //let base_addr = range.start();
+        //let file_offset = self.physical_address_base.checked_add(base_addr).unwrap();
         
         tracing::info!(
             "update_acceptance_bitmap: range = [{:#x}, {:#x})",
             range.start(),
             range.end()
         );
+/*
         // Update mapping
         self.mapping
             .map_file(
@@ -425,7 +426,7 @@ impl GuestMemoryMapping {
             )
             .map_err(MappingError::Map)
             .expect("failed to map acceptance bitmap range");
-
+*/
         tracing::debug!("update_acceptance_bitmap post mapping update");
         self.update_bitmap(
             range,
@@ -528,5 +529,26 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
                 }
             }
         }
+    }
+    
+    fn check_page_acceptance(&self, address: u64, len: usize) -> Result<bool, ()> {
+
+        tracing::info!(
+            "check_page_acceptance: address, len = [{:#x}, {:#x})",
+            address,
+            len as u64
+        );
+
+        let guard = self.protector.lock();
+        let protector = match guard.as_ref() {
+            Some(p) => p,
+            None => return Ok(true),
+        };
+        
+        let gpn_start = address / PAGE_SIZE as u64;
+        let gpn_end = (address + len as u64) / PAGE_SIZE as u64 + 1;
+        let range = MemoryRange::new(gpn_start * PAGE_SIZE as u64..gpn_end * PAGE_SIZE as u64);
+
+        protector.accept_unaccepted_guest_pages_pf(&range)
     }
 }

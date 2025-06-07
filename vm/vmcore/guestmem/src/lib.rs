@@ -455,6 +455,12 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
     fn base_iova(&self) -> Option<u64> {
         None
     }
+
+    fn check_page_acceptance(&self, address: u64, len: usize) -> Result<bool, ()> {
+        let _ = (address, len);
+        // By default, we do not check page acceptance.
+        Ok(true)
+    }
 }
 
 /// The action to take after [`GuestMemoryAccess::page_fault`] returns to
@@ -557,6 +563,10 @@ unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for Arc<T> {
 
     fn base_iova(&self) -> Option<u64> {
         self.as_ref().base_iova()
+    }
+
+    fn check_page_acceptance(&self, address: u64, len: usize) -> Result<bool, ()> {
+        self.as_ref().check_page_acceptance(address, len)
     }
 }
 
@@ -846,6 +856,23 @@ unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for MultiRegionGuestMemoryAc
 
     fn base_iova(&self) -> Option<u64> {
         unreachable!()
+    }
+
+    fn check_page_acceptance(
+        &self,
+        address: u64,
+        len: usize,
+    )-> Result<bool, ()>{
+        tracing::debug!(address, len, "check_page_acceptance MultiRegion");
+
+        let (i, _) = self.region_def.region(address, len as u64)
+            .expect("the caller should have validated the range was in the mapping");
+        let imp = self.imps[i]
+            .as_ref()
+            .ok_or(GuestMemoryBackingError::new(address, OutOfRange))
+            .expect("the caller should have validated the range was in the mapping");
+
+        imp.check_page_acceptance(address, len)
     }
 }
 
@@ -1282,7 +1309,11 @@ impl GuestMemory {
                 // SAFETY: offset + len is checked by `region()` to be inside the VA range.
                 let fault_offset = unsafe {
                     match region.check_access(access_type, offset, len as u64) {
-                        Ok(()) => return Ok(Some(ptr.as_ptr().add(offset as usize))),
+                        Ok(()) => {
+                            self.inner.imp.check_page_acceptance(gpa, len)
+                            .expect("the caller should have validated the range was in the mapping");
+                            return Ok(Some(ptr.as_ptr().add(offset as usize)))
+                        },
                         Err(n) => n,
                     }
                 };
