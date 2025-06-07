@@ -186,7 +186,6 @@ impl GpaVtlPermissions {
 ///
 /// FUTURE: this should go away as a separate object once all the logic is moved
 /// into this crate.
-#[derive(Debug)]
 pub struct MemoryAcceptor {
     mshv_hvcall: MshvHvcall,
     mshv_vtl: MshvVtl,
@@ -897,80 +896,11 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         self.inner.lock().vtl1_protections_enabled
     }
 
-    fn check_guest_page_acceptance(&self, gpn: u64) -> Result<bool, HvError> {
-
-        if !LAZY_ACCEPT {
-            return Ok(false);
-        }
-
-        // Validate gpn in RAM pages
-        let containing_range = self
-            .layout
-            .ram()
-            .iter()
-            .find(|r| r.range.contains_addr(gpn * HV_PAGE_SIZE))
-            .map(|r| r.range);
-
-        if containing_range.is_none() {
-            return Err(HvError::OperationDenied);
-        }
-        let containing_range = containing_range.unwrap();
-
-        // Prevent visibility changes while VTL protections are being
-        // applied. This does not need to be synchronized against other
-        // threads performing VTL protection changes; whichever thread
-        // finishes last will control the outcome.
-        let inner = self.inner.lock();
-
-        // Ensure that page is private.
-        if inner.shared.check_shared_bitmap(gpn) {
-            return Err(HvError::OperationDenied);
-        }
-        // Ensure that page has been accepted.
-        if inner.encrypted.check_acceptance_bitmap(gpn) {
-            return Ok(false);
-        }
-
-        // Attempt to accept the page as large page.
-        let pages_per_large_page = x86defs::X64_LARGE_PAGE_SIZE / HV_PAGE_SIZE;
-        let mut gpn_base = gpn / pages_per_large_page;
-        let mut gpn_last = gpn_base + pages_per_large_page - 1;
-
-        if gpn_base < containing_range.start_4k_gpn() {
-            gpn_base = containing_range.start_4k_gpn();
-        }
-        if gpn_last > containing_range.end_4k_gpn() {
-            gpn_last = containing_range.end_4k_gpn();
-        }
-
-        if gpn > gpn_base {
-            for containing_gpn in  ((gpn - 1)..gpn_base).rev() {
-                if inner.shared.check_shared_bitmap(containing_gpn) {
-                    gpn_base = containing_gpn + 1;
-                    break;
-                }
-            }
-        }
-        if gpn < gpn_last {
-            for containing_gpn in  (gpn + 1)..gpn_last {
-                if inner.shared.check_shared_bitmap(containing_gpn) {
-                    gpn_last = containing_gpn - 1;
-                    break;
-                }
-            }
-        }
-
-        self.accept_unaccepted_guest_pages(
-            &MemoryRange::new(gpn_base * HV_PAGE_SIZE..gpn_last * HV_PAGE_SIZE),
-             &inner.encrypted);
-        Ok(true)
-    }
-
     fn accept_unaccepted_guest_pages_pf (
         &self,
         range: &MemoryRange,
     ) -> Result<bool, ()> {
-        tracing::debug!(
+        tracing::info!(
             "accept_unaccepted_guest_pages_pf ENTRY: start = {}, end = {}",
             range.start(),
             range.end()

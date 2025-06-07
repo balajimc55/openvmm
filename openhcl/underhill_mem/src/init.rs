@@ -198,7 +198,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
     }
 
     // Map lower VTL memory.
-    let gpa_fd = Arc::new(MshvVtlLow::new().context("failed to open /dev/mshv_vtl_low")?);
+    let gpa_fd = MshvVtlLow::new().context("failed to open /dev/mshv_vtl_low")?;
 
     let gm = if hardware_isolated {
         assert!(params.vtl0_alias_map_bit.is_none());
@@ -215,11 +215,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             GuestMemoryMapping::builder(0)
                 .dma_base_address(None) // prohibit direct DMA attempts until TDISP is supported
                 .use_bitmap(Some(true))
-                .build(
-                    gpa_fd.clone(),
-                    params.mem_layout,
-                    Some(acceptor.as_ref().unwrap().clone())
-                )
+                .build(&gpa_fd, params.mem_layout)
                 .context("failed to map vtl0 memory")?
         });
 
@@ -294,7 +290,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 .use_bitmap(Some(false))
                 .ignore_registration_failure(params.boot_init.is_none())
                 .dma_base_address(Some(dma_base_address))
-                .build(gpa_fd.clone(), params.complete_memory_layout, None)
+                .build(&gpa_fd, params.complete_memory_layout)
                 .context("failed to map shared memory")?
         });
 
@@ -379,10 +375,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             acceptor.as_ref().unwrap().clone(),
         )) as Arc<dyn ProtectIsolatedMemory>;
 
-        // If set_protector requires mutable access, GuestMemoryMapping should use interior mutability (e.g., Mutex/RwLock) for the protector field.
-        // For example, if GuestMemoryMapping has: protector: Mutex<Option<Arc<dyn ProtectIsolatedMemory>>>
         vtl0_mapping.set_protector(protector.clone());
-        // If not, you need to redesign set_protector to use interior mutability or set the protector before wrapping in Arc.
         
         MemoryMappings {
             vtl0: vtl0_mapping,
@@ -406,7 +399,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                     .for_kernel_access(true)
                     .dma_base_address(Some(base_address))
                     .ignore_registration_failure(params.boot_init.is_none())
-                    .build(gpa_fd.clone(), params.mem_layout, None)
+                    .build(&gpa_fd, params.mem_layout)
                     .context("failed to map vtl0 memory")?,
             )
         };
@@ -440,7 +433,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                     .for_kernel_access(true)
                     .dma_base_address(Some(0))
                     .ignore_registration_failure(params.boot_init.is_none())
-                    .build(gpa_fd.clone(), params.mem_layout, None)
+                    .build(&gpa_fd, params.mem_layout)
                     .context("failed to map vtl1 memory")?;
                 Some(Arc::new(vtl1_mapping))
             }

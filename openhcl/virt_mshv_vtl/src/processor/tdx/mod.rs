@@ -2008,19 +2008,18 @@ impl UhProcessor<'_, TdxBacked> {
                 // sufficient, as it may be a write access where the page is
                 // protected, but we don't yet support MNF/guest VSM so this is
                 // okay enough.
-                /*
-                self.cvm_partition()
-                    .isolated_memory_protector
-                    .check_guest_page_acceptance(exit_info.gpa() / HV_PAGE_SIZE)
-                    .expect("Page acceptance failed");
-*/
                 let is_readable_ram =
                     self.partition.gm[intercepted_vtl].check_gpa_readable(exit_info.gpa());
                 if is_readable_ram {
-                    tracelimit::warn_ratelimited!(
+                    tracing::info!(
+                        "ept_violation: {:?}",
+                        exit_info.gpa()
+                    );
+                    /*                    tracelimit::warn_ratelimited!(
                         gpa = exit_info.gpa(),
                         "possible spurious EPT violation, ignoring"
                     );
+*/
                 } else {
                     // If this was an EPT violation while handling an iret, and
                     // that iret cleared the NMI blocking state, restore it.

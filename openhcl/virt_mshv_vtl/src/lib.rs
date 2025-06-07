@@ -1428,9 +1428,6 @@ pub trait ProtectIsolatedMemory: Send + Sync {
     /// and therefore whether these protections should be enforced.
     fn vtl1_protections_enabled(&self) -> bool;
 
-    /// Checks whether a guest page has been accepted, requesting acceptance if not.
-    fn check_guest_page_acceptance(&self, gpn_start: u64) -> Result<bool, HvError>;
-
     /// accept a range of unaccepted guest pages, returning true if all pages were accepted.
     fn accept_unaccepted_guest_pages_pf(&self, range: &MemoryRange,) -> Result<bool, ()>;
 }

@@ -788,30 +788,6 @@ unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for MultiRegionGuestMemoryAc
         region.subrange(offset_in_region, len, allow_preemptive_locking)
     }
 
-    fn page_fault(
-        &self,
-        address: u64,
-        len: usize,
-        write: bool,
-        bitmap_failure: bool,
-    ) -> PageFaultAction {
-        tracing::debug!(address, len, bitmap_failure, " multi-region page_fault ");
-
-        let _ = (address, len, write);
-        if bitmap_failure {
-            PageFaultAction::Fail(BitmapFailure.into())
-        } else {
-            let (i, _) = self.region_def.region(address, len as u64)
-                .expect("the caller should have validated the range was in the mapping");
-            let imp = self.imps[i]
-                .as_ref()
-                .ok_or(GuestMemoryBackingError::new(address, OutOfRange))
-                .expect("the caller should have validated the range was in the mapping");
-
-            imp.page_fault(address, len, write, false)
-        }
-    }
-    
     unsafe fn read_fallback(
         &self,
         addr: u64,
