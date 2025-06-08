@@ -2011,7 +2011,7 @@ impl UhProcessor<'_, TdxBacked> {
                 let is_readable_ram =
                     self.partition.gm[intercepted_vtl].check_gpa_readable(exit_info.gpa());
                 if is_readable_ram {
-                    tracing::info!(
+                    tracing::debug!(
                         "ept_violation: {:?}",
                         exit_info.gpa()
                     );

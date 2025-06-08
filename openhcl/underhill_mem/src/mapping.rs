@@ -464,11 +464,6 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
     }
 
     fn check_page_acceptance(&self, address: u64, len: usize) -> Result<bool, ()> {
-        tracing::debug!(
-            "check_page_acceptance: address, len = [{:#x}, {:#x})",
-            address,
-            len as u64
-        );
 
         let guard = self.protector.lock();
         let protector = match guard.as_ref() {
@@ -476,10 +471,15 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
             None => return Ok(true),
         };
         
+        tracing::debug!(
+            "check_page_acceptance: address, len = [{:#x}, {:#x})",
+            address,
+            len as u64
+        );
         let gpn_start = address / PAGE_SIZE as u64;
         let gpn_end = (address + len as u64) / PAGE_SIZE as u64 + 1;
         let range = MemoryRange::new(gpn_start * PAGE_SIZE as u64..gpn_end * PAGE_SIZE as u64);
 
-        protector.accept_unaccepted_guest_pages_pf(&range)
+        protector.accept_guest_pages(&range)
     }
 }

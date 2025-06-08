@@ -1428,8 +1428,8 @@ pub trait ProtectIsolatedMemory: Send + Sync {
     /// and therefore whether these protections should be enforced.
     fn vtl1_protections_enabled(&self) -> bool;
 
-    /// accept a range of unaccepted guest pages, returning true if all pages were accepted.
-    fn accept_unaccepted_guest_pages_pf(&self, range: &MemoryRange,) -> Result<bool, ()>;
+    /// accept a range of private guest pages.
+    fn accept_guest_pages(&self, range: &MemoryRange,) -> Result<bool, ()>;
 }
 
 /// Trait for access to TLB flush and lock machinery.

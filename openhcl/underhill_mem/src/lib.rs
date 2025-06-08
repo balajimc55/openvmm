@@ -896,24 +896,49 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         self.inner.lock().vtl1_protections_enabled
     }
 
-    fn accept_unaccepted_guest_pages_pf (
+    fn accept_guest_pages (
         &self,
         range: &MemoryRange,
     ) -> Result<bool, ()> {
-        tracing::info!(
-            "accept_unaccepted_guest_pages_pf ENTRY: start = {}, end = {}",
+        
+        tracing::debug!(
+            "accept_guest_pages ENTRY: start = {}, end = {}",
             range.start(),
             range.end()
         );
-        let mut accepted = false;
+
+        let pages_per_large_page = x86defs::X64_LARGE_PAGE_SIZE / HV_PAGE_SIZE;
+
+        let orig_gpn_start = range.start() / HV_PAGE_SIZE;
+        let orig_gpn_end = range.end() / HV_PAGE_SIZE;
+        
+        // Align to 2MB boundaries
+        let gpn_2mb_base = (orig_gpn_start / pages_per_large_page) * pages_per_large_page;
+        let gpn_2mb_end = ((orig_gpn_end + pages_per_large_page - 1) / pages_per_large_page) * pages_per_large_page;
+        let mut gpn_start = orig_gpn_start;
+        let mut gpn_end = orig_gpn_end;
+
         let inner = self.inner.lock();
+
+        let mut acceptance_needed = false;
+        for gpn in gpn_start..gpn_end {
+            if !inner.encrypted.check_acceptance_bitmap(gpn) {
+                acceptance_needed = true;
+                break;
+            }
+        }
+        if !acceptance_needed {
+            tracing::debug!("accept_guest_pages: no acceptance needed");
+            return Ok(false);
+        }
+        
         let accept_subrange = |accept_start, accept_end| {
             tracing::debug!(
-                "accept_unaccepted_guest_pages_pf accept_subrange: start = {}, end = {}",
+                "accept_guest_pages accept_subrange: start = {}, end = {}",
                 accept_start,
                 accept_end
             );
-            let subrange =  MemoryRange::new(accept_start * PAGE_SIZE as u64..accept_end * PAGE_SIZE as u64);
+            let subrange =  MemoryRange::new(accept_start * HV_PAGE_SIZE as u64..accept_end * HV_PAGE_SIZE as u64);
             self.acceptor
                 .accept_vtl0_pages(subrange)
                 .expect("everything should be in a state where we can accept VTL0 pages");
@@ -926,17 +951,34 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             inner.encrypted.update_acceptance_bitmap(subrange, true);
         };
 
+        let mut accept_large_page = gpn_2mb_base < gpn_2mb_end;
+        for gpn in gpn_2mb_base..gpn_2mb_end {
+            if gpn >= orig_gpn_start && gpn < orig_gpn_end {
+                continue;
+            }
+            if !inner.encrypted.check_shared_bitmap(gpn) {
+                accept_large_page = false;
+                break;
+            }
+        }
+
+        if accept_large_page {
+            gpn_start = gpn_2mb_base;
+            gpn_end = gpn_2mb_end;
+        }
+
+        let mut accepted = false;
         let mut accept_memory = false;
         let mut accept_start = 0;
-        for gpn in range.start() / PAGE_SIZE as u64..range.end() / PAGE_SIZE as u64 {
+        for gpn in gpn_start..gpn_end {
             tracing::debug!(
-                "accept_unaccepted_guest_pages_pf LOOP: gpn = {}, accept_start = {}",
+                "accept_guest_pages LOOP: gpn = {}, accept_start = {}",
                 gpn,
                 accept_start
             );
             if !inner.encrypted.check_acceptance_bitmap(gpn) {
                 tracing::debug!(
-                    "accept_unaccepted_guest_pages_pf: unaccepted page, accept_start = {}",
+                    "accept_guest_pages: unaccepted page, accept_start = {}",
                     accept_start,
                 );
                 if accept_memory {
@@ -946,7 +988,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                 accept_memory = true;
             } else {
                 tracing::debug!(
-                    "accept_unaccepted_guest_pages_pf: page already accepted, accept_start = {}, accept_end = {}",
+                    "accept_guest_pages: page already accepted, accept_start = {}, accept_end = {}",
                     accept_start,
                     gpn
                 );
@@ -958,7 +1000,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             }
         }
         if accept_memory {
-            accept_subrange(accept_start, range.end() / PAGE_SIZE as u64);
+            accept_subrange(accept_start, gpn_end);
             accepted = true;
         }
         return Ok(accepted);
