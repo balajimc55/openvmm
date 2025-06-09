@@ -81,7 +81,7 @@ impl GuestValidMemory {
                     .last()
                     .expect("memory map must have at least 1 entry");
                 let address_space_size = last_entry.range.end();
-                GuestMemoryBitmap::new(address_space_size as usize)?
+                GuestMemoryBitmap::new(address_space_size as usize, GuestMemoryBitmapPageSize::PageSize4k)?
             };
 
             for entry in memory_layout.ram() {
@@ -154,28 +154,54 @@ pub enum VtlPermissionsError {
 }
 
 #[derive(Debug)]
+enum GuestMemoryBitmapPageSize {
+    PageSize4k,
+    PageSize2M,
+}
+
+impl GuestMemoryBitmapPageSize {
+    #[inline(always)]
+    /// Page size of each bit represented in the bitmap.
+    fn bitmap_page_size(&self) -> usize {
+        match self {
+            GuestMemoryBitmapPageSize::PageSize4k => PAGE_SIZE as usize,
+            GuestMemoryBitmapPageSize::PageSize2M => x86defs::X64_LARGE_PAGE_SIZE as usize,
+        }
+    }
+}
+
+#[derive(Debug)]
 struct GuestMemoryBitmap {
     bitmap: SparseMapping,
+    page_size: GuestMemoryBitmapPageSize,
 }
 
 impl GuestMemoryBitmap {
-    fn new(address_space_size: usize) -> Result<Self, MappingError> {
-        let bitmap = SparseMapping::new((address_space_size / PAGE_SIZE).div_ceil(8))
+    fn new(
+        address_space_size: usize,
+        page_size: GuestMemoryBitmapPageSize
+    ) -> Result<Self, MappingError> {
+        let bitmap = 
+            SparseMapping::new(
+                (address_space_size / page_size.bitmap_page_size())
+                .div_ceil(8)
+            )
             .map_err(MappingError::BitmapReserve)?;
         bitmap
             .map_zero(0, bitmap.len())
             .map_err(MappingError::BitmapMap)?;
-        Ok(Self { bitmap })
+        Ok(Self { bitmap, page_size })
     }
 
     fn init(&mut self, range: MemoryRange, state: bool) -> Result<(), MappingError> {
-        if range.start() % (PAGE_SIZE as u64 * 8) != 0 || range.end() % (PAGE_SIZE as u64 * 8) != 0
+        let page_size = self.page_size.bitmap_page_size();
+        if range.start() % (page_size as u64 * 8) != 0 || range.end() % (page_size as u64 * 8) != 0
         {
             return Err(MappingError::BadAlignment(range));
         }
 
-        let bitmap_start = range.start() as usize / PAGE_SIZE / 8;
-        let bitmap_end = (range.end() - 1) as usize / PAGE_SIZE / 8;
+        let bitmap_start = range.start() as usize / page_size / 8;
+        let bitmap_end = (range.end() - 1) as usize / page_size / 8;
         let bitmap_page_start = bitmap_start / PAGE_SIZE;
         let bitmap_page_end = bitmap_end / PAGE_SIZE;
         let page_count = bitmap_page_end + 1 - bitmap_page_start;
@@ -189,9 +215,9 @@ impl GuestMemoryBitmap {
 
         // Set the initial bitmap state.
         if state {
-            let start_gpn = range.start() / PAGE_SIZE as u64;
-            let gpn_count = range.len() / PAGE_SIZE as u64;
-            assert_eq!(range.start() % 8, 0);
+            let start_gpn = range.start() / page_size as u64;
+            let gpn_count = range.len() / page_size as u64;
+            assert_eq!(start_gpn % 8, 0);
             assert_eq!(gpn_count % 8, 0);
             self.bitmap
                 .fill_at(start_gpn as usize / 8, 0xff, gpn_count as usize / 8)
@@ -203,7 +229,8 @@ impl GuestMemoryBitmap {
 
     /// Panics if the range is outside of guest RAM.
     fn update(&self, range: MemoryRange, state: bool) {
-        for gpn in range.start() / PAGE_SIZE as u64..range.end() / PAGE_SIZE as u64 {
+        let page_size = self.page_size.bitmap_page_size();
+        for gpn in range.start() / page_size as u64..range.end() / page_size as u64 {
             // TODO: use `fill_at` for the aligned part of the range.
             let mut b = 0;
             self.bitmap
@@ -390,10 +417,10 @@ impl GuestMemoryMappingBuilder {
         let mut permission_bitmaps = if self.permissions_bitmap_state.is_some() {
             Some(PermissionBitmaps {
                 permission_update_lock: Default::default(),
-                read_bitmap: GuestMemoryBitmap::new(address_space_size as usize)?,
-                write_bitmap: GuestMemoryBitmap::new(address_space_size as usize)?,
-                kernel_execute_bitmap: GuestMemoryBitmap::new(address_space_size as usize)?,
-                user_execute_bitmap: GuestMemoryBitmap::new(address_space_size as usize)?,
+                read_bitmap: GuestMemoryBitmap::new(address_space_size as usize, GuestMemoryBitmapPageSize::PageSize4k)?,
+                write_bitmap: GuestMemoryBitmap::new(address_space_size as usize, GuestMemoryBitmapPageSize::PageSize4k)?,
+                kernel_execute_bitmap: GuestMemoryBitmap::new(address_space_size as usize, GuestMemoryBitmapPageSize::PageSize4k)?,
+                user_execute_bitmap: GuestMemoryBitmap::new(address_space_size as usize, GuestMemoryBitmapPageSize::PageSize4k)?,
             })
         } else {
             None
