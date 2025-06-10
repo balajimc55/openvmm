@@ -9,6 +9,7 @@ mod init;
 mod mapping;
 mod registrar;
 
+use guestmem::GuestMemoryAccess;
 pub use init::BootInit;
 pub use init::Init;
 pub use init::MemoryMappings;
@@ -542,11 +543,16 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         };
 
         for &range in &ranges {
-            if shared && vtl == GuestVtl::Vtl0 {
-                self.vtl0
-                    .update_permission_bitmaps(range, HV_MAP_GPA_PERMISSIONS_NONE);
-            }
+            if shared {
+                // Ensure that page is accepted before any visibility changes are attempted.
+                // TODO: Handle differently for VTL 1 memory?
+                self.vtl0.check_guest_page_acceptance(range.start(), range.len() as usize);
 
+                if vtl == GuestVtl::Vtl0 {
+                    self.vtl0
+                        .update_permission_bitmaps(range, HV_MAP_GPA_PERMISSIONS_NONE);
+                }
+            }
             clear_bitmap.update_valid(range, false);
         }
 
@@ -749,6 +755,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         for ram_range in self.layout.ram().iter() {
             let mut protect_start = ram_range.range.start();
             let mut page_count = 0;
+            let accepted_memory = self.vtl0.accepted_memory();
 
             for gpn in
                 ram_range.range.start() / PAGE_SIZE as u64..ram_range.range.end() / PAGE_SIZE as u64
@@ -757,7 +764,17 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                 // find all accepted memory. When lazy acceptance exists,
                 // this should track all pages that have been accepted and
                 // should be used instead.
-                if !inner.valid_encrypted.check_valid(gpn) {
+                let is_accepted = if let Some(accepted_memory) = accepted_memory {
+                    // Scale gpn to the acceptance bitmap's page size for acceptance check.
+                    let bitmap_page_size = accepted_memory.bitmap_page_size() as u64;
+                    let gpa = gpn * PAGE_SIZE as u64;
+                    let bitmap_gpn = gpa / bitmap_page_size;
+                    accepted_memory.check_acceptance(bitmap_gpn)
+                } else {
+                    inner.valid_encrypted.check_valid(gpn)
+                };
+
+                if !is_accepted {
                     if page_count > 0 {
                         let end_address = protect_start + (page_count * PAGE_SIZE as u64);
                         ranges.push(MemoryRange::new(protect_start..end_address));
@@ -821,6 +838,13 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             .map(|r| r.map(|r| MemoryRange::new(r.start..r.end)))
             .collect::<Result<Vec<_>, _>>()
             .unwrap(); // Ok to unwrap, we've validated the gpns above.
+
+        if self.vtl0.accepted_memory().is_some() {
+            // Ensure that the pages are accepted.
+            for range in &ranges {
+                self.vtl0.check_guest_page_acceptance(range.start(), range.len() as usize);
+            }
+        }
 
         self.apply_protections_with_overlay_handling(vtl, &ranges, protections)
             .expect("applying vtl protections should succeed");

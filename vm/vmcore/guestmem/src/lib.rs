@@ -518,6 +518,12 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
     fn base_iova(&self) -> Option<u64> {
         None
     }
+
+    /// Checks acceptance state for the guest page and proceeds to accept if
+    /// the page isunaccepted.    
+    fn check_guest_page_acceptance(&self, address: u64, len: usize) {
+        let _ = (address, len);
+    }
 }
 
 trait DynGuestMemoryAccess: 'static + Send + Sync + Any {
@@ -564,6 +570,8 @@ trait DynGuestMemoryAccess: 'static + Send + Sync + Any {
     ) -> Result<bool, GuestMemoryBackingError>;
 
     fn expose_va(&self, address: u64, len: u64) -> Result<(), GuestMemoryBackingError>;
+
+    fn check_guest_page_acceptance(&self, address: u64, len: usize);
 }
 
 impl<T: GuestMemoryAccess> DynGuestMemoryAccess for T {
@@ -622,6 +630,11 @@ impl<T: GuestMemoryAccess> DynGuestMemoryAccess for T {
     fn expose_va(&self, address: u64, len: u64) -> Result<(), GuestMemoryBackingError> {
         self.expose_va(address, len)
     }
+
+    fn check_guest_page_acceptance(&self, address: u64, len: usize) {
+        self.check_guest_page_acceptance(address, len);
+    }
+
 }
 
 /// The action to take after [`GuestMemoryAccess::page_fault`] returns to
@@ -723,6 +736,10 @@ unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for Arc<T> {
 
     fn base_iova(&self) -> Option<u64> {
         self.as_ref().base_iova()
+    }
+
+    fn check_guest_page_acceptance(&self, address: u64, len: usize) {
+        self.as_ref().check_guest_page_acceptance(address, len);
     }
 }
 
@@ -992,6 +1009,20 @@ impl<T: GuestMemoryAccess> DynGuestMemoryAccess for MultiRegionGuestMemoryAccess
                 kind: err.kind,
                 err: err.err,
             }),
+        }
+    }
+
+    fn check_guest_page_acceptance(
+        &self,
+        address: u64,
+        len: usize,
+    ) {
+        let (i, _) = self.region_def.region(address, len as u64)
+            .expect("the caller should have validated the range was in the mapping");
+        if let Some(imp) = self.imps[i].as_ref() {
+            imp.check_guest_page_acceptance(address, len);
+        } else {
+            return;
         }
     }
 }
@@ -1447,7 +1478,10 @@ impl GuestMemory {
                 // SAFETY: offset + len is checked by `region()` to be inside the VA range.
                 let fault_offset = unsafe {
                     match region.check_access(access_type, offset, len as u64) {
-                        Ok(()) => return Ok(Some(ptr.as_ptr().add(offset as usize))),
+                        Ok(()) => {
+                            self.inner.imp.check_guest_page_acceptance(gpa, len);
+                            return Ok(Some(ptr.as_ptr().add(offset as usize)))
+                        },
                         Err(n) => n,
                     }
                 };

@@ -152,7 +152,8 @@ struct PermissionBitmaps {
 
 /// Bitmap to track acceptance status for lazy page acceptance.
 #[derive(Debug)]
-struct GuestAcceptedMemory {
+pub struct GuestAcceptedMemory {
+    acceptance_lock: Mutex<()>,
     bitmap_lock: Mutex<()>,
     bitmap: GuestMemoryBitmap,
     acceptor: Arc<MemoryAcceptor>,
@@ -160,16 +161,20 @@ struct GuestAcceptedMemory {
 
 impl GuestAcceptedMemory {
     /// Check if the given page is accepted.
-    fn check_acceptance(&self, gpn: u64) -> bool {
-        assert_eq!(gpn % self.bitmap.page_size.bitmap_page_size() as u64, 0);
+    pub fn check_acceptance(&self, gpn: u64) -> bool {
+        assert_eq!(gpn % self.bitmap.page_size() as u64, 0);
         self.bitmap.page_state(gpn)
     }
 
     /// Update the acceptance bitmap for the given range.
-    fn update_acceptance(&self, range: MemoryRange, state: bool) {
+    pub fn update_acceptance(&self, range: MemoryRange, state: bool) {
         let _lock = self.bitmap_lock.lock();
         self.bitmap.update(range, state);
     }
+
+    pub fn bitmap_page_size(&self) -> u64 {
+        self.bitmap.page_size() as u64
+    }    
 }
 #[derive(Error, Debug)]
 pub enum VtlPermissionsError {
@@ -218,7 +223,7 @@ impl GuestMemoryBitmap {
     }
 
     fn init(&mut self, range: MemoryRange, state: bool) -> Result<(), MappingError> {
-        let page_size = self.page_size.bitmap_page_size();
+        let page_size = self.page_size();
         if range.start() % page_size as u64 != 0 || range.end() % page_size as u64 != 0
         {
             return Err(MappingError::BadAlignment(range));
@@ -246,7 +251,7 @@ impl GuestMemoryBitmap {
 
     /// Panics if the range is outside of guest RAM.
     fn update(&self, range: MemoryRange, state: bool) {
-        let page_size = self.page_size.bitmap_page_size();
+        let page_size = self.page_size();
         let start_gpn = range.start() / page_size as u64;
         let end_gpn = range.end() / page_size as u64;
         if start_gpn >= end_gpn {
@@ -306,6 +311,10 @@ impl GuestMemoryBitmap {
 
     fn as_ptr(&self) -> *mut u8 {
         self.bitmap.as_ptr().cast()
+    }
+
+    pub fn page_size(&self) -> usize {
+        self.page_size.bitmap_page_size()
     }
 }
 
@@ -493,6 +502,7 @@ impl GuestMemoryMappingBuilder {
 
         let mut accepted_memory = if self.acceptance_bitmap_state.is_some() {
             Some(GuestAcceptedMemory {
+                acceptance_lock: Default::default(),
                 bitmap_lock: Default::default(),
                 bitmap: GuestMemoryBitmap::new(address_space_size as usize, GuestMemoryBitmapPageSize::PageSize2M)?,
                 acceptor: self.acceptor.clone().unwrap(),
@@ -627,6 +637,10 @@ impl GuestMemoryMapping {
         self.mapping
             .fill_at(range.start() as usize, 0, range.len() as usize)
     }
+
+    pub fn accepted_memory(&self) -> Option<&GuestAcceptedMemory> {
+        self.accepted_memory.as_ref()
+    }
 }
 
 /// SAFETY: Implementing the `GuestMemoryAccess` contract, including the
@@ -689,6 +703,52 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
             self.valid_memory
                 .as_ref()
                 .map(|bitmap| bitmap.access_bitmap())
+        }
+    }
+
+    fn check_guest_page_acceptance(&self, address: u64, len: usize) {
+
+        let Some(accepted_memory) = &self.accepted_memory else {
+            return;
+        };    
+
+        let acceptor = accepted_memory.acceptor.clone();
+        let bitmap_page_size = accepted_memory.bitmap_page_size();
+
+        // TODO: GuestMemoryBitmap::init() enforces the alignment by bitmap_page_size for
+        // all ranges. Do we still need to verify that gpn_start..gpn_end is within valid
+        // range of guest MemoryLayout?
+
+        // TODO: Do we need to validate in mapping to make sure this is all private?
+        // Might not be needed because before when we convert a page to shared, we make sure to 
+        // first accept that gpa page as large page. So any non-shared porrtion 
+        // of that large page should be accepted already.
+        let gpn_start = address / bitmap_page_size as u64;
+        let gpn_end = (address + len as u64 - 1) / bitmap_page_size as u64 + 1;
+
+        for gpn in gpn_start..gpn_end {
+            if accepted_memory.check_acceptance(gpn) {
+                // Wait for any pending acceptance operation to complete.
+                if accepted_memory.acceptance_lock.try_lock().is_none() {
+                    let _lock = accepted_memory.acceptance_lock.lock();
+                }
+                continue;
+            }
+
+            // Accquire the acceptance lock to indicate that an acceptance operation is underway.
+            let _lock = accepted_memory.acceptance_lock.lock();
+
+            // Check to see whether this page has already been marked accepted. If not, it must
+            // be accepted now.
+            if accepted_memory.check_acceptance(gpn) {
+               continue;
+            }
+
+            let range = MemoryRange::new(gpn * bitmap_page_size as u64..(gpn + 1) * bitmap_page_size as u64);
+            accepted_memory.update_acceptance(range, true);
+            acceptor.accept_lower_vtl_pages(range)
+                .expect("everything should be in a state where we can accept lower pages");
+            acceptor.apply_initial_lower_vtl_protections(range).unwrap();
         }
     }
 }
