@@ -195,7 +195,7 @@ impl GuestMemoryBitmap {
 
     fn init(&mut self, range: MemoryRange, state: bool) -> Result<(), MappingError> {
         let page_size = self.page_size.bitmap_page_size();
-        if range.start() % (page_size as u64 * 8) != 0 || range.end() % (page_size as u64 * 8) != 0
+        if range.start() % page_size as u64 != 0 || range.end() % page_size as u64 != 0
         {
             return Err(MappingError::BadAlignment(range));
         }
@@ -215,34 +215,57 @@ impl GuestMemoryBitmap {
 
         // Set the initial bitmap state.
         if state {
-            let start_gpn = range.start() / page_size as u64;
-            let gpn_count = range.len() / page_size as u64;
-            assert_eq!(start_gpn % 8, 0);
-            assert_eq!(gpn_count % 8, 0);
-            self.bitmap
-                .fill_at(start_gpn as usize / 8, 0xff, gpn_count as usize / 8)
-                .unwrap();
+            self.update(range, true);
         }
-
         Ok(())
     }
 
     /// Panics if the range is outside of guest RAM.
     fn update(&self, range: MemoryRange, state: bool) {
         let page_size = self.page_size.bitmap_page_size();
-        for gpn in range.start() / page_size as u64..range.end() / page_size as u64 {
-            // TODO: use `fill_at` for the aligned part of the range.
+        let start_gpn = range.start() / page_size as u64;
+        let end_gpn = range.end() / page_size as u64;
+        if start_gpn >= end_gpn {
+            return;
+        }
+
+        let update_partial_byte = |byte_idx: u64, bit_start: u64, bit_end: u64| {
             let mut b = 0;
             self.bitmap
-                .read_at(gpn as usize / 8, std::slice::from_mut(&mut b))
+                .read_at(byte_idx as usize, std::slice::from_mut(&mut b))
                 .unwrap();
+            let mask = (((1u16 << (bit_end - bit_start)) - 1) as u8) << bit_start;
             if state {
-                b |= 1 << (gpn % 8);
+                b |= mask;
             } else {
-                b &= !(1 << (gpn % 8));
+                b &= !mask;
             }
             self.bitmap
-                .write_at(gpn as usize / 8, std::slice::from_ref(&b))
+                .write_at(byte_idx as usize, std::slice::from_ref(&b))
+                .unwrap();
+        };        
+
+        // Handle updates to bitmap for pages not aligned to the bitmap 8-page boundary/e.
+        let first_byte = start_gpn / 8;
+        let last_byte = (end_gpn - 1) / 8;
+        if start_gpn % 8 != 0 {
+            let bit_start = start_gpn % 8;
+            let bit_end = 8;
+            update_partial_byte(first_byte, bit_start, bit_end);
+        }
+        if last_byte != first_byte && (end_gpn % 8 != 0) {
+            let bit_start = 0;
+            let bit_end = end_gpn % 8;
+            update_partial_byte(last_byte, bit_start, bit_end);
+        }    
+
+        // Handle updates to ranges aligned to the bitmap 8-page boundary.
+        let aligned_start = if start_gpn % 8 == 0 { first_byte } else { first_byte + 1 };
+        let aligned_end = if end_gpn % 8 == 0 { last_byte } else { last_byte.saturating_sub(1) };
+        if aligned_end >= aligned_start {
+            let fill_val = if state { 0xff } else { 0x00 };
+            self.bitmap
+                .fill_at(aligned_start as usize, fill_val, (aligned_end - aligned_start + 1) as usize)
                 .unwrap();
         }
     }
