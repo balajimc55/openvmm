@@ -162,7 +162,6 @@ pub struct GuestAcceptedMemory {
 impl GuestAcceptedMemory {
     /// Check if the given page is accepted.
     pub fn check_acceptance(&self, gpn: u64) -> bool {
-        assert_eq!(gpn % self.bitmap.page_size() as u64, 0);
         self.bitmap.page_state(gpn)
     }
 
@@ -252,18 +251,21 @@ impl GuestMemoryBitmap {
     /// Panics if the range is outside of guest RAM.
     fn update(&self, range: MemoryRange, state: bool) {
         let page_size = self.page_size();
+        assert!(
+            range.start() % page_size as u64 == 0 && range.end() % page_size as u64 == 0,
+            "range not aligned to bitmap page size",
+        );
         let start_gpn = range.start() / page_size as u64;
         let end_gpn = range.end() / page_size as u64;
         if start_gpn >= end_gpn {
             return;
         }
-
-        let update_partial_byte = |byte_idx: u64, bit_start: u64, bit_end: u64| {
+        let update_bits = |byte_idx: u64, first_bit: u64, last_bit: u64| {
             let mut b = 0;
             self.bitmap
                 .read_at(byte_idx as usize, std::slice::from_mut(&mut b))
                 .unwrap();
-            let mask = (((1u16 << (bit_end - bit_start)) - 1) as u8) << bit_start;
+            let mask = (((1u16 << (last_bit - first_bit + 1)) - 1) as u8) << first_bit;
             if state {
                 b |= mask;
             } else {
@@ -274,18 +276,19 @@ impl GuestMemoryBitmap {
                 .unwrap();
         };        
 
-        // Handle updates to bitmap for pages not aligned to the bitmap 8-page boundary/e.
         let first_byte = start_gpn / 8;
         let last_byte = (end_gpn - 1) / 8;
-        if start_gpn % 8 != 0 {
-            let bit_start = start_gpn % 8;
-            let bit_end = 8;
-            update_partial_byte(first_byte, bit_start, bit_end);
+        if first_byte == last_byte {
+            update_bits(first_byte, start_gpn % 8, (end_gpn - 1) % 8);
+            return;
         }
-        if last_byte != first_byte && (end_gpn % 8 != 0) {
-            let bit_start = 0;
-            let bit_end = end_gpn % 8;
-            update_partial_byte(last_byte, bit_start, bit_end);
+
+        // Handle updates to bitmap for pages not aligned to the bitmap 8-page boundary/e.
+        if start_gpn % 8 != 0 {
+             update_bits(first_byte, start_gpn % 8, 7);
+        }
+        if end_gpn % 8 != 0 {
+            update_bits(last_byte, 0, (end_gpn - 1) % 8);
         }    
 
         // Handle updates to ranges aligned to the bitmap 8-page boundary.
@@ -504,7 +507,7 @@ impl GuestMemoryMappingBuilder {
             Some(GuestAcceptedMemory {
                 acceptance_lock: Default::default(),
                 bitmap_lock: Default::default(),
-                bitmap: GuestMemoryBitmap::new(address_space_size as usize, GuestMemoryBitmapPageSize::PageSize2M)?,
+                bitmap: GuestMemoryBitmap::new(address_space_size as usize, GuestMemoryBitmapPageSize::PageSize4k)?,
                 acceptor: self.acceptor.clone().unwrap(),
             })
         } else {
@@ -710,7 +713,7 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
 
         let Some(accepted_memory) = &self.accepted_memory else {
             return;
-        };    
+        };
 
         let acceptor = accepted_memory.acceptor.clone();
         let bitmap_page_size = accepted_memory.bitmap_page_size();
