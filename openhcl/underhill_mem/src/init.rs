@@ -98,6 +98,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
     };
 
     let hardware_isolated = params.isolation.is_hardware_isolated();
+    let use_lazy_accept = params.isolation == IsolationType::Tdx;
 
     if let Some(boot_init) = &params.boot_init {
         if !params.isolation.is_isolated() {
@@ -130,54 +131,56 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 }
             }
 
-            // Accept the memory that was not accepted by the boot loader.
-            // FUTURE: do this lazily.
-            let vp_count = std::cmp::max(1, params.processor_topology.vp_count() - 1);
-            let accept_subrange = move |subrange| {
-                acceptor.accept_lower_vtl_pages(subrange).unwrap();
-                if hardware_isolated {
-                    // For VBS-isolated VMs, the VTL protections are set as
-                    // part of the accept call.
-                    acceptor
-                        .apply_initial_lower_vtl_protections(subrange)
-                        .unwrap();
-                }
-            };
-            tracing::debug!("Accepting VTL0 memory");
-            std::thread::scope(|scope| {
-                for source_range in memory_range::subtract_ranges(ram, accepted_ranges) {
-                    validated_ranges.push(source_range);
-
-                    // Chunks must be 2mb aligned
-                    let two_mb = 2 * 1024 * 1024;
-                    let mut range = source_range.aligned_subrange(two_mb);
-                    if !range.is_empty() {
-                        let chunk_size = (range.page_count_2m().div_ceil(vp_count as u64)) * two_mb;
-                        let chunk_count = range.len().div_ceil(chunk_size);
-
-                        for _ in 0..chunk_count {
-                            let subrange;
-                            (subrange, range) = if range.len() >= chunk_size {
-                                range.split_at_offset(chunk_size)
-                            } else {
-                                (range, MemoryRange::EMPTY)
-                            };
-                            scope.spawn(move || accept_subrange(subrange));
-                        }
-                        assert!(range.is_empty());
+            if !use_lazy_accept {
+                // Accept the memory that was not accepted by the boot loader.
+                // FUTURE: do this lazily.
+                let vp_count = std::cmp::max(1, params.processor_topology.vp_count() - 1);
+                let accept_subrange = move |subrange| {
+                    acceptor.accept_lower_vtl_pages(subrange).unwrap();
+                    if hardware_isolated {
+                        // For VBS-isolated VMs, the VTL protections are set as
+                        // part of the accept call.
+                        acceptor
+                            .apply_initial_lower_vtl_protections(subrange)
+                            .unwrap();
                     }
+                };
+                tracing::debug!("Accepting VTL0 memory");
+                std::thread::scope(|scope| {
+                    for source_range in memory_range::subtract_ranges(ram, accepted_ranges) {
+                        validated_ranges.push(source_range);
 
-                    // Now accept whatever wasn't aligned on the edges
-                    scope.spawn(move || {
-                        for unaligned_subrange in memory_range::subtract_ranges(
-                            [source_range],
-                            [source_range.aligned_subrange(two_mb)],
-                        ) {
-                            accept_subrange(unaligned_subrange);
+                        // Chunks must be 2mb aligned
+                        let two_mb = 2 * 1024 * 1024;
+                        let mut range = source_range.aligned_subrange(two_mb);
+                        if !range.is_empty() {
+                            let chunk_size = (range.page_count_2m().div_ceil(vp_count as u64)) * two_mb;
+                            let chunk_count = range.len().div_ceil(chunk_size);
+
+                            for _ in 0..chunk_count {
+                                let subrange;
+                                (subrange, range) = if range.len() >= chunk_size {
+                                    range.split_at_offset(chunk_size)
+                                } else {
+                                    (range, MemoryRange::EMPTY)
+                                };
+                                scope.spawn(move || accept_subrange(subrange));
+                            }
+                            assert!(range.is_empty());
                         }
-                    });
-                }
-            });
+
+                        // Now accept whatever wasn't aligned on the edges
+                        scope.spawn(move || {
+                            for unaligned_subrange in memory_range::subtract_ranges(
+                                [source_range],
+                                [source_range.aligned_subrange(two_mb)],
+                            ) {
+                                accept_subrange(unaligned_subrange);
+                            }
+                        });
+                    }
+                });
+            }
         }
     }
 
@@ -237,8 +240,9 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 .dma_base_address(None)
                 .use_permissions_bitmaps(if use_vtl1 { Some(true) } else { None })
                 .use_acceptance_bitmap(
-                    Some(acceptor.as_ref().unwrap().clone()),
-                    Some(false))
+                    if use_lazy_accept { Some(acceptor.as_ref().unwrap().clone()) } else { None },
+                    if use_lazy_accept { Some(false) } else { None },
+                )
                 .build_with_bitmap(&gpa_fd, &encrypted_memory_view)
                 .context("failed to map vtl0 memory")?
         });
@@ -332,6 +336,18 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 .build_with_bitmap(&gpa_fd, &shared_memory_view)
                 .context("failed to map shared memory")?
         });
+
+        if let Some(accepted_memory) = vtl0_mapping.accepted_memory() {
+            // Update acceptance bitmap to mark pages already accepted.
+            if let Some(boot_init) = &params.boot_init {
+                let ram = params.mem_layout.ram().iter().map(|r| r.range);
+                let accepted_ranges = boot_init.accepted_regions.iter().copied();
+                for range in memory_range::overlapping_ranges(ram.clone(), accepted_ranges.clone())
+                {
+                    accepted_memory.update_acceptance(range, true);
+                }
+            }
+        }
 
         tracing::debug!("Creating VTL0 guest memory");
         let vtl0_gm = GuestMemory::new_multi_region(
