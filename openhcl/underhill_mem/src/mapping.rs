@@ -4,6 +4,7 @@
 // UNSAFETY: Implementing GuestMemoryAccess.
 #![expect(unsafe_code)]
 
+use crate::MemoryAcceptor;
 use crate::MshvVtlWithPolicy;
 use crate::RegistrationError;
 use crate::registrar::MemoryRegistrar;
@@ -134,7 +135,7 @@ pub struct GuestMemoryMapping {
     #[inspect(with = "Option::is_some")]
     permission_bitmaps: Option<PermissionBitmaps>,
     #[inspect(with = "Option::is_some")]
-    acceptance_bitmap: Option<AcceptanceBitmap>,
+    accepted_memory: Option<GuestAcceptedMemory>,
     registrar: Option<MemoryRegistrar<MshvVtlWithPolicy>>,
 }
 
@@ -151,12 +152,13 @@ struct PermissionBitmaps {
 
 /// Bitmap to track acceptance status for lazy page acceptance.
 #[derive(Debug)]
-struct AcceptanceBitmap {
+struct GuestAcceptedMemory {
     bitmap_lock: Mutex<()>,
     bitmap: GuestMemoryBitmap,
+    acceptor: Arc<MemoryAcceptor>,
 }
 
-impl AcceptanceBitmap {
+impl GuestAcceptedMemory {
     /// Check if the given page is accepted.
     fn check_acceptance(&self, gpn: u64) -> bool {
         assert_eq!(gpn % self.bitmap.page_size.bitmap_page_size() as u64, 0);
@@ -332,6 +334,7 @@ pub struct GuestMemoryMappingBuilder {
     valid_memory: Option<Arc<GuestValidMemory>>,
     permissions_bitmap_state: Option<bool>,
     acceptance_bitmap_state: Option<bool>,
+    acceptor: Option<Arc<MemoryAcceptor>>,
     shared: bool,
     for_kernel_access: bool,
     dma_base_address: Option<u64>,
@@ -361,8 +364,17 @@ impl GuestMemoryMappingBuilder {
 
     /// Set whether to allocate tracking bitmaps for accept state for lazy acceptance of
     /// lower VTL pages and specify the initial state of the bitmaps.
-    pub fn use_acceptance_bitmap(&mut self, initial_state: Option<bool>) -> &mut Self {
+    pub fn use_acceptance_bitmap(
+        &mut self,
+        acceptor: Option<Arc<MemoryAcceptor>>,
+        initial_state: Option<bool>,
+    ) -> &mut Self {
+        assert!(
+            initial_state.is_some() == acceptor.is_some(),
+            "initial_state and acceptor must both be Some or both be None"
+        );
         self.acceptance_bitmap_state = initial_state;
+        self.acceptor = acceptor;
         self
     }
 
@@ -479,10 +491,11 @@ impl GuestMemoryMappingBuilder {
             None
         };
 
-        let mut acceptance_bitmap = if self.acceptance_bitmap_state.is_some() {
-            Some(AcceptanceBitmap {
+        let mut accepted_memory = if self.acceptance_bitmap_state.is_some() {
+            Some(GuestAcceptedMemory {
                 bitmap_lock: Default::default(),
                 bitmap: GuestMemoryBitmap::new(address_space_size as usize, GuestMemoryBitmapPageSize::PageSize2M)?,
+                acceptor: self.acceptor.clone().unwrap(),
             })
         } else {
             None
@@ -518,11 +531,11 @@ impl GuestMemoryMappingBuilder {
                 bitmaps.user_execute_bitmap.init(entry.range, state)?;
             }
 
-            if let Some((acceptance_bitmap, state)) = acceptance_bitmap
+            if let Some((accepted_memory, state)) = accepted_memory
                 .as_mut()
                 .zip(self.acceptance_bitmap_state)
             {
-                acceptance_bitmap.bitmap.init(entry.range, state)?;
+                accepted_memory.bitmap.init(entry.range, state)?;
             }
 
             tracing::trace!(?entry, "mapped memory map entry");
@@ -549,7 +562,7 @@ impl GuestMemoryMappingBuilder {
             iova_offset: self.dma_base_address,
             valid_memory: self.valid_memory.clone(),
             permission_bitmaps,
-            acceptance_bitmap,
+            accepted_memory,
             registrar,
         })
     }
@@ -567,6 +580,7 @@ impl GuestMemoryMapping {
             valid_memory: None,
             permissions_bitmap_state: None,
             acceptance_bitmap_state: None,
+            acceptor: None,
             shared: false,
             for_kernel_access: false,
             dma_base_address: None,

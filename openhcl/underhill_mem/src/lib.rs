@@ -195,6 +195,7 @@ pub struct ModifyGpaVisibilityError {
 ///
 /// FUTURE: this should go away as a separate object once all the logic is moved
 /// into this crate.
+#[derive(Debug)]
 pub struct MemoryAcceptor {
     mshv_hvcall: MshvHvcall,
     mshv_vtl: MshvVtl,
