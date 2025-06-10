@@ -236,6 +236,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             GuestMemoryMapping::builder(0)
                 .dma_base_address(None)
                 .use_permissions_bitmaps(if use_vtl1 { Some(true) } else { None })
+                .use_acceptance_bitmap(Some(false))
                 .build_with_bitmap(&gpa_fd, &encrypted_memory_view)
                 .context("failed to map vtl0 memory")?
         });
