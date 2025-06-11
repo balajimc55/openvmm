@@ -18,8 +18,10 @@ use inspect::Inspect;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use sparse_mmap::SparseMapping;
+use core::panic;
 use std::ptr::NonNull;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
 
@@ -165,6 +167,11 @@ impl GuestAcceptedMemory {
         self.bitmap.page_state(gpn)
     }
 
+    /// Check if the given page is accepted atomically.
+    pub fn check_acceptance_atomic(&self, gpn: u64) -> bool {
+        self.bitmap.page_state_atomic(gpn)
+    }
+
     /// Update the acceptance bitmap for the given range.
     pub fn update_acceptance(&self, range: MemoryRange, state: bool) {
         let _lock = self.bitmap_lock.lock();
@@ -258,7 +265,8 @@ impl GuestMemoryBitmap {
         let start_gpn = range.start() / page_size as u64;
         let end_gpn = range.end() / page_size as u64;
         if start_gpn >= end_gpn {
-            return;
+            panic!("invalid range: start_gpn >= end_gpn, start_gpn: {}, end_gpn: {}, range.start: {}, range.end: {}",
+                   start_gpn, end_gpn, range.start(), range.end());
         }
         let update_bits = |byte_idx: u64, first_bit: u64, last_bit: u64| {
             let mut b = 0;
@@ -309,6 +317,16 @@ impl GuestMemoryBitmap {
         self.bitmap
             .read_at(gpn as usize / 8, std::slice::from_mut(&mut b))
             .unwrap();
+        b & (1 << (gpn % 8)) != 0
+    }
+
+    /// Atomically read the bitmap for `gpn`.
+    /// Panics if the range is outside of guest RAM.
+    fn page_state_atomic(&self, gpn: u64) -> bool {
+        let byte_ptr: *const AtomicU8 = unsafe {
+            self.bitmap.as_ptr().add((gpn as usize) / 8)
+        }  as *const AtomicU8;
+        let b = unsafe { (*byte_ptr).load(Ordering::Relaxed) };
         b & (1 << (gpn % 8)) != 0
     }
 
@@ -730,9 +748,11 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
         let gpn_end = (address + len as u64 - 1) / bitmap_page_size as u64 + 1;
 
         for gpn in gpn_start..gpn_end {
-            if accepted_memory.check_acceptance(gpn) {
-                // Wait for any pending acceptance operation to complete.
-                if accepted_memory.acceptance_lock.try_lock().is_none() {
+            // Perform a lock free lookup to see if this page has already been accepted.
+            if accepted_memory.check_acceptance_atomic(gpn) {
+                // If the acceptance lock is held, wait for any pending acceptance operations
+                // to complete.
+                if accepted_memory.acceptance_lock.is_locked() {
                     let _lock = accepted_memory.acceptance_lock.lock();
                 }
                 continue;
