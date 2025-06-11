@@ -507,7 +507,7 @@ impl GuestMemoryMappingBuilder {
             Some(GuestAcceptedMemory {
                 acceptance_lock: Default::default(),
                 bitmap_lock: Default::default(),
-                bitmap: GuestMemoryBitmap::new(address_space_size as usize, GuestMemoryBitmapPageSize::PageSize4k)?,
+                bitmap: GuestMemoryBitmap::new(address_space_size as usize, GuestMemoryBitmapPageSize::PageSize2M)?,
                 acceptor: self.acceptor.clone().unwrap(),
             })
         } else {
