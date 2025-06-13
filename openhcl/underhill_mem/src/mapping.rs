@@ -87,14 +87,13 @@ impl GuestValidMemory {
                 GuestMemoryBitmap::new(address_space_size as usize, GuestMemoryBitmapPageSize::PageSize4k)?
             };
 
-            for entry in memory_layout.ram() {
-                if entry.range.is_empty() {
-                    continue;
-                }
-
-                bitmap.init(entry.range, valid_bitmap_state)?;
-            }
-
+            let ranges: Vec<MemoryRange> = memory_layout
+                .ram()
+                .iter()
+                .filter(|entry| !entry.range.is_empty())
+                .map(|entry| entry.range)
+                .collect();
+            bitmap.init(&ranges, valid_bitmap_state)?;
             bitmap
         };
 
@@ -208,6 +207,7 @@ impl GuestMemoryBitmapPageSize {
 struct GuestMemoryBitmap {
     bitmap: SparseMapping,
     page_size: GuestMemoryBitmapPageSize,
+    initialized: bool,
 }
 
 impl GuestMemoryBitmap {
@@ -224,33 +224,46 @@ impl GuestMemoryBitmap {
         bitmap
             .map_zero(0, bitmap.len())
             .map_err(MappingError::BitmapMap)?;
-        Ok(Self { bitmap, page_size })
+        Ok(Self { bitmap, page_size, initialized: false })
     }
 
-    fn init(&mut self, range: MemoryRange, state: bool) -> Result<(), MappingError> {
+    fn init(&mut self, ranges: &Vec<MemoryRange>, state: bool) -> Result<(), MappingError> {
+
+        if self.initialized {
+            panic!("bitmap already initialized");
+        }
         let page_size = self.page_size();
-        if range.start() % page_size as u64 != 0 || range.end() % page_size as u64 != 0
-        {
-            return Err(MappingError::BadAlignment(range));
+        for range in ranges {
+            if range.start() % page_size as u64 != 0 || range.end() % page_size as u64 != 0
+            {
+                return Err(MappingError::BadAlignment(*range));
+            }
         }
 
-        let bitmap_start = range.start() as usize / page_size / 8;
-        let bitmap_end = (range.end() - 1) as usize / page_size / 8;
-        let bitmap_page_start = bitmap_start / PAGE_SIZE;
-        let bitmap_page_end = bitmap_end / PAGE_SIZE;
-        let page_count = bitmap_page_end + 1 - bitmap_page_start;
+        // Allocate all ranges before initializing the bitmap..
+        for range in ranges {
+            if range.start() % page_size as u64 != 0 || range.end() % page_size as u64 != 0 {
+                return Err(MappingError::BadAlignment(*range));
+            }
+            let bitmap_start = range.start() as usize / page_size / 8;
+            let bitmap_end = (range.end() - 1) as usize / page_size / 8;
+            let bitmap_page_start = bitmap_start / PAGE_SIZE;
+            let bitmap_page_end = bitmap_end / PAGE_SIZE;
+            let page_count = bitmap_page_end + 1 - bitmap_page_start;
 
-        // TODO SNP: map some pre-reserved lower VTL memory into the
-        // bitmap. Or just figure out how to hot add that memory to the
-        // kernel. Or have the boot loader reserve it at boot time.
-        self.bitmap
-            .alloc(bitmap_page_start * PAGE_SIZE, page_count * PAGE_SIZE)
-            .map_err(MappingError::BitmapAlloc)?;
+            // TODO SNP: map some pre-reserved lower VTL memory into the
+            // bitmap. Or just figure out how to hot add that memory to the
+            // kernel. Or have the boot loader reserve it at boot time.
+            self.bitmap
+                .alloc(bitmap_page_start * PAGE_SIZE, page_count * PAGE_SIZE)
+                .map_err(MappingError::BitmapAlloc)?;
+        }
 
         // Set the initial bitmap state.
         if state {
-            self.update(range, true);
+            ranges.iter().for_each(|range| self.update(*range, true));
         }
+        self.initialized = true;
         Ok(())
     }
 
@@ -530,6 +543,7 @@ impl GuestMemoryMappingBuilder {
         };
 
         // Loop through each of the memory map entries and create a mapping for it.
+        let mut ranges = Vec::new();
         for entry in memory_layout.ram() {
             if entry.range.is_empty() {
                 continue;
@@ -549,24 +563,26 @@ impl GuestMemoryMappingBuilder {
                 )
                 .map_err(MappingError::Map)?;
 
-            if let Some((bitmaps, state)) = permission_bitmaps
-                .as_mut()
-                .zip(self.permissions_bitmap_state)
-            {
-                bitmaps.read_bitmap.init(entry.range, state)?;
-                bitmaps.write_bitmap.init(entry.range, state)?;
-                bitmaps.kernel_execute_bitmap.init(entry.range, state)?;
-                bitmaps.user_execute_bitmap.init(entry.range, state)?;
-            }
-
-            if let Some((accepted_memory, state)) = accepted_memory
-                .as_mut()
-                .zip(self.acceptance_bitmap_state)
-            {
-                accepted_memory.bitmap.init(entry.range, state)?;
-            }
-
+            ranges.push(entry.range);
             tracing::trace!(?entry, "mapped memory map entry");
+        }
+
+        // Initialize the bitmaps.
+        if let Some((bitmaps, state)) = permission_bitmaps
+            .as_mut()
+            .zip(self.permissions_bitmap_state)
+        {
+            bitmaps.read_bitmap.init(&ranges, state)?;
+            bitmaps.write_bitmap.init(&ranges, state)?;
+            bitmaps.kernel_execute_bitmap.init(&ranges, state)?;
+            bitmaps.user_execute_bitmap.init(&ranges, state)?;
+        }        
+
+        if let Some((accepted_memory, state)) = accepted_memory 
+            .as_mut()
+            .zip(self.acceptance_bitmap_state)
+        {
+            accepted_memory.bitmap.init(&ranges, state)?;
         }
 
         let registrar = if self.for_kernel_access {
