@@ -156,6 +156,7 @@ pub struct GuestAcceptedMemory {
     acceptance_lock: Mutex<()>,
     bitmap_lock: Mutex<()>,
     bitmap: GuestMemoryBitmap,
+    boot_accepted_addr_end: u64,
     acceptor: Arc<MemoryAcceptor>,
 }
 
@@ -376,6 +377,7 @@ pub struct GuestMemoryMappingBuilder {
     valid_memory: Option<Arc<GuestValidMemory>>,
     permissions_bitmap_state: Option<bool>,
     acceptance_bitmap_state: Option<bool>,
+    boot_accepted_addr_end: u64,
     acceptor: Option<Arc<MemoryAcceptor>>,
     shared: bool,
     for_kernel_access: bool,
@@ -408,6 +410,7 @@ impl GuestMemoryMappingBuilder {
         &mut self,
         acceptor: Option<Arc<MemoryAcceptor>>,
         initial_state: Option<bool>,
+        boot_accepted_addr_end: u64,
     ) -> &mut Self {
         assert!(
             initial_state.is_some() == acceptor.is_some(),
@@ -415,6 +418,7 @@ impl GuestMemoryMappingBuilder {
         );
         self.acceptance_bitmap_state = initial_state;
         self.acceptor = acceptor;
+        self.boot_accepted_addr_end = boot_accepted_addr_end;
         self
     }
 
@@ -536,6 +540,7 @@ impl GuestMemoryMappingBuilder {
                 acceptance_lock: Default::default(),
                 bitmap_lock: Default::default(),
                 bitmap: GuestMemoryBitmap::new(address_space_size as usize, GuestMemoryBitmapPageSize::PageSize2M)?,
+                boot_accepted_addr_end: self.boot_accepted_addr_end,
                 acceptor: self.acceptor.clone().unwrap(),
             })
         } else {
@@ -624,6 +629,7 @@ impl GuestMemoryMapping {
             valid_memory: None,
             permissions_bitmap_state: None,
             acceptance_bitmap_state: None,
+            boot_accepted_addr_end: 0,
             acceptor: None,
             shared: false,
             for_kernel_access: false,
@@ -745,6 +751,11 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
             return;
         };
 
+        if (address + len as u64) <= accepted_memory.boot_accepted_addr_end {
+            // If the address range is before the boot accepted address end,
+            // it should have already been accepted during boot.
+            return;
+        }
         let acceptor = accepted_memory.acceptor.clone();
         let bitmap_page_size = accepted_memory.bitmap_page_size();
 

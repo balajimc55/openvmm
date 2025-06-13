@@ -99,6 +99,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
     let hardware_isolated = params.isolation.is_hardware_isolated();
     let use_lazy_accept = params.isolation == IsolationType::Tdx;
+    let mut boot_accepted_addr_end = 0;
 
     if let Some(boot_init) = &params.boot_init {
         if !params.isolation.is_isolated() {
@@ -150,12 +151,18 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             std::thread::scope(|scope| {
                 let mut unaligned_handles = Vec::new();
 
+                // Calculate total RAM size
+                let total_ram_size: u64 = ram.clone().map(|r| r.len()).sum();
+                let accept_limit = total_ram_size / 2;
+                let mut accepted_size = 0;
+
                 for source_range in memory_range::subtract_ranges(ram, accepted_ranges) {
                     // Chunks must be 2mb aligned
                     let two_mb = 2 * 1024 * 1024;
-                    let mut range = source_range.aligned_subrange(two_mb);
-                    if !use_lazy_accept {
-                        boot_accepted_ranges.push(source_range);
+                    let range = source_range.aligned_subrange(two_mb);
+
+                    // Common logic for chunking and accepting subranges
+                    let accept_chunks = |mut range: MemoryRange| {
                         if !range.is_empty() {
                             let chunk_size = (range.page_count_2m().div_ceil(vp_count as u64)) * two_mb;
                             let chunk_count = range.len().div_ceil(chunk_size);
@@ -171,7 +178,29 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                             }
                             assert!(range.is_empty());
                         }
+                    };
+
+                    if !use_lazy_accept {
+                        boot_accepted_ranges.push(source_range);
+                        accept_chunks(range);
+                    } else if accepted_size < accept_limit {
+                        if !range.is_empty() {
+                            // Calculate how many bytes we are allowed to accept in this iteration
+                            let remaining = (accept_limit.saturating_sub(accepted_size) + two_mb - 1) & !(two_mb - 1);
+                            let (accept_range, _) = if range.len() > remaining {
+                                range.split_at_offset(remaining)
+                            } else {
+                                (range, MemoryRange::EMPTY)
+                            };
+                            boot_accepted_ranges.push(accept_range);
+                            accept_chunks(accept_range);
+                            accepted_size += accept_range.len();
+                            if accept_range.end() > boot_accepted_addr_end {
+                                boot_accepted_addr_end = accept_range.end();
+                            }
+                        }
                     }
+
                     // Now accept whatever wasn't aligned on the edges
                     let handle = scope.spawn(move || {
                         let mut unaligned_subranges = Vec::new();
@@ -259,6 +288,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 .use_acceptance_bitmap(
                     if use_lazy_accept { Some(acceptor.as_ref().unwrap().clone()) } else { None },
                     if use_lazy_accept { Some(false) } else { None },
+                    boot_accepted_addr_end,
                 )
                 .build_with_bitmap(&gpa_fd, &encrypted_memory_view)
                 .context("failed to map vtl0 memory")?
