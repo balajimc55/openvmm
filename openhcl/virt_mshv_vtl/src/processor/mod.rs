@@ -76,6 +76,8 @@ use virt::VpIndex;
 use virt::io::CpuIo;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::vmtime::VmTimeAccess;
+use pal_tdx::Timer;
+use crate::IsolationType;
 
 /// An object to run lower VTLs and to access processor state.
 ///
@@ -941,7 +943,10 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             vmtime: partition
                 .vmtime
                 .access(format!("vp-{}", vp_info.base.vp_index.index())),
-            timer: driver.new_dyn_timer(),
+            timer: match partition.isolation {
+                IsolationType::Tdx => smallbox::smallbox!(Timer::new()),
+                _ => driver.new_dyn_timer(),
+            },
             force_exit_sidecar: false,
             signaled_sidecar_exit: false,
             vtls_tlb_locked: VtlsTlbLocked {
@@ -950,7 +955,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             },
             exit_activities: Default::default(),
         };
-
+// PollImpl::new(smallbox::smallbox!(Timer::new())),
         T::init(&mut vp);
 
         Ok(vp)

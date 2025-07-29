@@ -5230,6 +5230,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pal_tdx"
+version = "0.0.0"
+dependencies = [
+ "pal_async",
+ "smallbox",
+]
+
+[[package]]
 name = "pal_uring"
 version = "0.0.0"
 dependencies = [
@@ -8085,12 +8093,14 @@ dependencies = [
  "minircu",
  "pal",
  "pal_async",
+ "pal_tdx",
  "pal_uring",
  "parking_lot",
  "pci_core",
  "safe_intrinsics",
  "safeatomic",
  "sidecar_client",
+ "smallbox",
  "thiserror 2.0.12",
  "tracelimit",
  "tracing",

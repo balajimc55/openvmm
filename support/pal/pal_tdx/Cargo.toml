@@ -1,0 +1,11 @@
+[package]
+name = "pal_tdx"
+edition.workspace = true
+rust-version.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+pal_async.workspace = true
+smallbox.workspace = true
+
+[lints]
+workspace = true

@@ -403,6 +403,18 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
         .map(Into::into)
     }
 
+    /// Sets the L2 TSC Deadline.
+    ///
+    /// Returns the old value of the field.
+    pub fn set_tsc_deadline(&self, value: u64) -> Result<(), TdCallResult> {
+        tdcall_vp_wr(
+            &mut MshvVtlTdcall(&self.hcl.mshv_vtl),
+            x86defs::tdx::TDX_FIELD_CODE_TSC_DEADLINE,
+            value.into(),
+            !0,
+        ).map(|_| ())
+    }
+
     /// Issues an INVGLA instruction for the VP.
     pub fn invgla(
         &self,

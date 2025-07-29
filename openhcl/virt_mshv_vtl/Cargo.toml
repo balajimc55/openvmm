@@ -38,11 +38,13 @@ mesh.workspace = true
 minircu.workspace = true
 pal_async.workspace = true
 pal_uring.workspace = true
+pal_tdx.workspace = true
 pal.workspace = true
 safeatomic.workspace = true
 tracelimit.workspace = true
 user_driver.workspace = true
-
+smallbox.workspace = true
+  
 anyhow.workspace = true
 bitfield-struct.workspace = true
 bitvec = { workspace = true, features = ["std", "atomic"] }
