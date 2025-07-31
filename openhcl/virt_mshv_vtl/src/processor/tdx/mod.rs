@@ -1095,6 +1095,13 @@ impl BackingPrivate for TdxBacked {
         dev: &impl CpuIo,
         _stop: &mut virt::StopVp<'_>,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
+        
+        tracing::error!(
+            vtl = this.vp_index().index(),
+            cpu = this.inner.cpu_index,
+            "TDX Run VP entry"
+        );
+
         this.run_vp_tdx(dev).await
     }
 
@@ -1157,6 +1164,13 @@ impl BackingPrivate for TdxBacked {
     ) -> Result<bool, VpHaltReason<UhRunVpError>> {
         this.cvm_process_interrupts(scan_irr, first_scan_irr, dev)
     }
+
+    fn new_timer (
+    driver: &impl Driver
+    ) -> PollImpl<dyn PollTimer> {
+        driver.new_dyn_timer()
+    }
+    
 }
 
 impl UhProcessor<'_, TdxBacked> {

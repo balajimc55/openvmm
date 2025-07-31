@@ -194,6 +194,9 @@ mod private {
     use virt::VpHaltReason;
     use virt::io::CpuIo;
     use virt::vp::AccessVpState;
+    use pal_async::driver::Driver;
+    use pal_async::driver::PollImpl;
+    use pal_async::timer::PollTimer;
 
     #[expect(private_interfaces)]
     pub trait BackingPrivate: 'static + Sized + InspectMut + Sized {
@@ -261,6 +264,12 @@ mod private {
         fn hv_mut(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv>;
 
         fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool;
+
+        fn new_timer (
+            driver: &impl Driver
+        ) -> PollImpl<dyn PollTimer> {
+            driver.new_dyn_timer()
+        }
     }
 }
 
@@ -794,6 +803,12 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
             nice::nice(1);
         }
 
+        tracing::trace!(
+            vtl = self.vp_index().index(),
+            cpu = self.inner.cpu_index,
+            "Generic Run VP entry"
+        );
+
         let mut last_waker = None;
 
         // Force deliverability notifications to be reevaluated.
@@ -941,7 +956,8 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             vmtime: partition
                 .vmtime
                 .access(format!("vp-{}", vp_info.base.vp_index.index())),
-            timer: driver.new_dyn_timer(),
+//            timer: driver.new_dyn_timer(),
+            timer: T::new_timer(driver),
             force_exit_sidecar: false,
             signaled_sidecar_exit: false,
             vtls_tlb_locked: VtlsTlbLocked {
