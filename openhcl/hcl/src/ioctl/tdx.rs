@@ -421,6 +421,18 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
     pub fn fx_state_mut(&mut self) -> &mut x86defs::xsave::Fxsave {
         &mut self.tdx_vp_context_mut().fx_state
     }
+
+    /// Sets the L2 TSC Deadline.
+    ///
+    /// Returns the old value of the field.
+    pub fn set_tsc_deadline(&self, value: u64) -> Result<(), TdCallResult> {
+        tdcall_vp_wr(
+            &mut MshvVtlTdcall(&self.hcl.mshv_vtl),
+            x86defs::tdx::TDX_FIELD_CODE_TSC_DEADLINE,
+            value.into(),
+            !0,
+        ).map(|_| ())
+    }
 }
 
 fn vmcs_field_code(field: VmcsField, vtl: GuestVtl) -> TdxExtendedFieldCode {

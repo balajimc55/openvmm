@@ -2037,7 +2037,7 @@ impl UhPartition {
 
 #[cfg(guest_arch = "x86_64")]
 /// Gets the TSC frequency for the current platform.
-fn get_tsc_frequency(isolation: IsolationType) -> Result<u64, Error> {
+pub fn get_tsc_frequency(isolation: IsolationType) -> Result<u64, Error> {
     // Always get the frequency from the hypervisor. It's believed that, as long
     // as the hypervisor is behaving, it will provide the most precise and accurate frequency.
     let msr = MsrDevice::new(0).map_err(Error::OpenMsr)?;

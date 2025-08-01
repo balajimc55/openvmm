@@ -4,6 +4,7 @@
 //! Processor support for TDX partitions.
 
 mod tlb_flush;
+pub mod timer;
 
 use super::BackingPrivate;
 use super::BackingSharedParams;
@@ -51,6 +52,7 @@ use inspect::InspectMut;
 use inspect_counters::Counter;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
+//use timer::DeadlineTimer;
 use thiserror::Error;
 use tlb_flush::FLUSH_GVA_LIST_SIZE;
 use tlb_flush::TdxFlushState;
@@ -127,6 +129,11 @@ use x86defs::vmx::VmxExit;
 use x86defs::vmx::VmxExitBasic;
 use x86emu::Gp;
 use x86emu::Segment;
+//use pal_async::driver::Driver;
+//use pal_async::driver::PollImpl;
+//use pal_async::timer::PollTimer;
+use std::task::{Context, Poll};
+use pal_async::timer::{Instant};
 
 /// MSRs that are allowed to be read by the guest without interception.
 const MSR_ALLOWED_READ: &[u32] = &[
@@ -388,6 +395,9 @@ pub struct TdxBacked {
 
     #[inspect(flatten)]
     cvm: UhCvmVpState,
+
+    #[inspect(skip)]
+    tsc_scale: u128,
 }
 
 #[derive(InspectMut)]
@@ -809,6 +819,21 @@ impl TdxBacked {
     pub fn shared_pages_required_per_cpu() -> u64 {
         UhDirectOverlay::Count as u64
     }
+    fn ns_to_tsc_deadline(&self, nanos_from_now: u64) -> u64 {
+        // Get current TSC value using the RDTSC instruction
+        let current_tsc = safe_intrinsics::rdtsc();
+        
+        // Convert nanoseconds to TSC units
+        // Formula: tsc_delta = nanos * (tsc_frequency / 1_000_000_000)
+        //let tsc_delta = (nanos_from_now * self.tsc_frequency) / 1_000_000_000;
+        let tsc_delta = ((nanos_from_now as u128 * self.tsc_scale) >> 64) as u64;
+
+        
+        // Calculate future TSC deadline by adding delta to current TSC
+        // Using wrapping_add to handle potential overflow correctly
+        current_tsc.wrapping_add(tsc_delta)
+    }
+
 }
 
 // The memory used to back the untrusted synic is not guest-visible, but rather
@@ -1009,6 +1034,11 @@ impl BackingPrivate for TdxBacked {
                 params.vp_info,
                 UhDirectOverlay::Count as usize,
             )?,
+            tsc_scale:
+                {
+                    let tsc_frequency = crate::get_tsc_frequency(crate::IsolationType::Tdx).unwrap();
+                    (((tsc_frequency as u128) << 64) / 1000_000_000_u128) as u128
+                }
         })
     }
 
@@ -1104,6 +1134,13 @@ impl BackingPrivate for TdxBacked {
         dev: &impl CpuIo,
         _stop: &mut virt::StopVp<'_>,
     ) -> Result<(), VpHaltReason> {
+        
+        tracing::error!(
+            vtl = this.vp_index().index(),
+            cpu = this.inner.cpu_index,
+            "TDX Run VP entry"
+        );
+
         this.run_vp_tdx(dev).await
     }
 
@@ -1156,6 +1193,35 @@ impl BackingPrivate for TdxBacked {
         dev: &impl CpuIo,
     ) -> bool {
         this.cvm_process_interrupts(scan_irr, first_scan_irr, dev)
+    }
+/*
+    fn new_timer (
+        _driver: &impl Driver
+        ) -> PollImpl<dyn PollTimer> {
+            smallbox::smallbox!(DeadlineTimer::new())
+        }
+ */
+    fn poll_timer(
+        this: &mut UhProcessor<'_, Self>,
+        _cx: &mut Context<'_>,
+        deadline: Option<Instant>
+    ) -> Poll<Instant> {
+
+        let deadline = deadline.unwrap();
+        loop {
+            let now = Instant::now();
+            if deadline <= now {
+                break Poll::Ready(now);
+            } else {
+
+                // TODO: Issue TDG.VP.WR
+                this.runner.set_tsc_deadline(
+                    this.backing.ns_to_tsc_deadline(
+                        (deadline - now).as_nanos() as u64,
+                    )
+                ).expect("Failed to set TSC deadline");
+            }
+        }
     }
 }
 

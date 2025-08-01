@@ -93,6 +93,10 @@ async fn start_vp(
     mut vp: UhProcessorBox,
     mut runner: RunnerBuilder,
 ) -> anyhow::Result<std::thread::JoinHandle<()>> {
+    tracing::error!(
+        vtl = vp.vp_index().index(),
+        "start_vp VP"
+    );
     let vp_thread = std::thread::spawn(move || {
         let pool = pal_uring::IoUringPool::new("vp", 256).unwrap();
         let driver = pool.client().initiator().clone();

@@ -8404,6 +8404,8 @@ dependencies = [
  "safe_intrinsics",
  "safeatomic",
  "sidecar_client",
+ "smallbox",
+ "tdcall",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
