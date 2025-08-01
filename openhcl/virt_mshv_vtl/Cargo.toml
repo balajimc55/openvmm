@@ -60,3 +60,7 @@ build_rs_guest_arch.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+smallbox.workspace = true
+tdcall.workspace = true
