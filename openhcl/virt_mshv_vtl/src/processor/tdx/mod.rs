@@ -11,7 +11,6 @@ use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
 use super::UhEmulationState;
 use super::UhHypercallHandler;
-use super::UhRunVpError;
 use super::hardware_cvm;
 use super::vp_state;
 use super::vp_state::UhVpStateAccess;
