@@ -480,7 +480,7 @@ pub const TDX_FIELD_CODE_L2_CTLS_VM1: TdxExtendedFieldCode =
 pub const TDX_FIELD_CODE_L2_CTLS_VM2: TdxExtendedFieldCode =
     TdxExtendedFieldCode(0xA020000300000052);
 pub const TDX_FIELD_CODE_TSC_DEADLINE: TdxExtendedFieldCode =
-    TdxExtendedFieldCode(0xA020000300000058);
+    TdxExtendedFieldCode(0xA020000300000059);
 
 /// Extended field code for TDG.VP.WR and TDG.VP.RD
 #[bitfield(u64)]

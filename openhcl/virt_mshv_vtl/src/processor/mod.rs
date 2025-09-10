@@ -275,6 +275,7 @@ mod private {
             _cx: &mut Context<'_>,
             _deadline: Option<Instant>
         ) -> Poll<Instant> {
+            tracing::info!("poll_timer default implementation");
             Poll::Pending
         }
     }

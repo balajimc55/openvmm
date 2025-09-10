@@ -11,6 +11,7 @@ use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
 use super::UhEmulationState;
 use super::UhHypercallHandler;
+use super::UhRunVpError;
 use super::hardware_cvm;
 use super::vp_state;
 use super::vp_state::UhVpStateAccess;
@@ -397,6 +398,9 @@ pub struct TdxBacked {
     cvm: UhCvmVpState,
 
     #[inspect(skip)]
+    tsc_frequency: u64,
+
+    #[inspect(skip)]
     tsc_scale: u128,
 }
 
@@ -467,6 +471,7 @@ struct ExitStats {
     needs_interrupt_reinject: Counter,
     exception: Counter,
     descriptor_table: Counter,
+    timer_expired: Counter,
 }
 
 enum UhDirectOverlay {
@@ -820,6 +825,11 @@ impl TdxBacked {
         UhDirectOverlay::Count as u64
     }
     fn ns_to_tsc_deadline(&self, nanos_from_now: u64) -> u64 {
+        
+        tracing::info!(
+            "ns_to_tsc_deadline nanos_from_now =  {}, TSC frequency {}, TSC scale {}",
+            nanos_from_now, self.tsc_frequency, self.tsc_scale
+        );
         // Get current TSC value using the RDTSC instruction
         let current_tsc = safe_intrinsics::rdtsc();
         
@@ -828,10 +838,16 @@ impl TdxBacked {
         //let tsc_delta = (nanos_from_now * self.tsc_frequency) / 1_000_000_000;
         let tsc_delta = ((nanos_from_now as u128 * self.tsc_scale) >> 64) as u64;
 
-        
         // Calculate future TSC deadline by adding delta to current TSC
         // Using wrapping_add to handle potential overflow correctly
-        current_tsc.wrapping_add(tsc_delta)
+        let future_tsc = current_tsc.wrapping_add(tsc_delta);
+
+
+        tracing::info!(
+            "ns_to_tsc_deadline current_tsc = {}, tsc_delta = {}, future_tsc = {}",
+            current_tsc, tsc_delta, future_tsc
+        );
+        future_tsc
     }
 
 }
@@ -1034,11 +1050,11 @@ impl BackingPrivate for TdxBacked {
                 params.vp_info,
                 UhDirectOverlay::Count as usize,
             )?,
-            tsc_scale:
-                {
-                    let tsc_frequency = crate::get_tsc_frequency(crate::IsolationType::Tdx).unwrap();
-                    (((tsc_frequency as u128) << 64) / 1000_000_000_u128) as u128
-                }
+            tsc_frequency: crate::get_tsc_frequency(crate::IsolationType::Tdx).unwrap(),
+            tsc_scale: {
+                let tsc_frequency = crate::get_tsc_frequency(crate::IsolationType::Tdx).unwrap();
+                (((tsc_frequency as u128) << 64) / 1000_000_000_u128) as u128
+            }
         })
     }
 
@@ -1134,13 +1150,13 @@ impl BackingPrivate for TdxBacked {
         dev: &impl CpuIo,
         _stop: &mut virt::StopVp<'_>,
     ) -> Result<(), VpHaltReason> {
-        
+        /*
         tracing::error!(
             vtl = this.vp_index().index(),
             cpu = this.inner.cpu_index,
             "TDX Run VP entry"
         );
-
+ */
         this.run_vp_tdx(dev).await
     }
 
@@ -1206,7 +1222,7 @@ impl BackingPrivate for TdxBacked {
         _cx: &mut Context<'_>,
         deadline: Option<Instant>
     ) -> Poll<Instant> {
-
+        //tracing::info!("poll_timer TDX implementation");
         let deadline = deadline.unwrap();
         loop {
             let now = Instant::now();
@@ -1215,11 +1231,11 @@ impl BackingPrivate for TdxBacked {
             } else {
 
                 // TODO: Issue TDG.VP.WR
-                this.runner.set_tsc_deadline(
-                    this.backing.ns_to_tsc_deadline(
+                let future_tsc = this.backing.ns_to_tsc_deadline(
                         (deadline - now).as_nanos() as u64,
-                    )
-                ).expect("Failed to set TSC deadline");
+                    );
+                this.runner.set_tsc_deadline(future_tsc).expect("Failed to set TSC deadline");
+                break Poll::Pending;
             }
         }
     }
@@ -2244,6 +2260,13 @@ impl UhProcessor<'_, TdxBacked> {
                 &mut self.backing.vtls[intercepted_vtl]
                     .exit_stats
                     .descriptor_table
+            }
+            VmxExitBasic::TIMER_EXPIRED => {
+                // This is a timer interrupt, which is expected.
+                // We can ignore it, since the timer will be handled
+                // by the kernel.
+                tracing::info!("Timer expired");
+                &mut self.backing.vtls[intercepted_vtl].exit_stats.timer_expired
             }
             _ => {
                 return Err(VpHaltReason::InvalidVmState(

@@ -426,12 +426,28 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
     ///
     /// Returns the old value of the field.
     pub fn set_tsc_deadline(&self, value: u64) -> Result<(), TdCallResult> {
+        /*
         tdcall_vp_wr(
             &mut MshvVtlTdcall(&self.hcl.mshv_vtl),
             x86defs::tdx::TDX_FIELD_CODE_TSC_DEADLINE,
             value.into(),
             !0,
-        ).map(|_| ())
+        ).map(|_| ()) 
+        */
+
+    let result = tdcall_vp_wr(
+        &mut MshvVtlTdcall(&self.hcl.mshv_vtl),
+        x86defs::tdx::TDX_FIELD_CODE_TSC_DEADLINE,
+        value.into(),
+        !0,
+    );
+    // Print the TdCallResult output for debugging
+    match &result {
+        Ok(out) => tracing::info!("tdcall_vp_wr succeeded: {:?}", out),
+        Err(err) => tracing::error!("tdcall_vp_wr failed: {:?}", err),
+    }
+    result.map(|_| ())
+
     }
 }
 
