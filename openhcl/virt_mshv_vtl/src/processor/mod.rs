@@ -800,8 +800,8 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     // Arm the timer.
                     if let Some(timeout) = self.vmtime.get_timeout() {
                         let deadline = self.vmtime.host_time(timeout);
-//                        if self.timer.poll_timer(cx, deadline).is_ready() {
-                        if T::poll_timer(self, cx, deadline).is_ready() {
+                        if self.timer.poll_timer(cx, deadline).is_ready() {
+//                        if T::poll_timer(self, cx, deadline).is_ready() {
                             continue;
                         }
                     }
