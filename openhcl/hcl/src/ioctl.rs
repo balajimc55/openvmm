@@ -3388,8 +3388,26 @@ impl Hcl {
         match unsafe { 
             hcl_map_redirected_device_interrupt(self.mshv_vtl.file.as_raw_fd(), &mut param) 
         } {
-            Ok(_) => Some(param.vector),
-            Err(_) => None,
+            Ok(_) => {
+                let mapped_vector = param.vector;
+                tracing::trace!(
+                    vector = mapped_vector,
+                    apic_id,
+                    create_mapping,
+                    "map_redirected_device_interrupt success"
+                );
+                Some(mapped_vector)
+            },
+            Err(err) => {
+                tracing::trace!(
+                    vector,
+                    apic_id,
+                    create_mapping,
+                    ?err,
+                    "map_redirected_device_interrupt failed"
+                );
+                None
+            },
         }
     }
 }
