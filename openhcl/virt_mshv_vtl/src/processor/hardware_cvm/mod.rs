@@ -879,9 +879,25 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         // Update `proxy_irr_blocked` for this VP itself
         self.vp.update_proxy_irr_filter(self.intercepted_vtl);
 
+        // Trace target_processors details - always print
+        let target_masks: Vec<u64> = target_processors.as_generic_set().collect();
+        let (target_valid_masks, target_mask_array) = target_masks.split_first()
+            .map(|(&valid, masks)| (valid, masks))
+            .unwrap_or((0, &[][..]));
+        
+        tracing::warn!(
+            "retarget_physical_interrupt ENTRY: vector=0x{:x}, multicast={}, target_processors_count=0x{:x}, valid_masks=0x{:x}, masks={:x?}",
+            vector,
+            multicast,
+            target_processors.iter().count(),
+            target_valid_masks,
+            target_mask_array
+        );
+
         if self.vp.partition.use_posted_redirection {
             // Try posted redirection. Fall back to proxy delivery on any error.
             if let Some(Ok(())) = self.try_posted_redirection(device_id, entry, vector, multicast, &target_processors) {
+                tracing::warn!("retarget_physical_interrupt EXIT 1:result=Ok(())");
                 return Ok(());
             }
             tracing::warn!("retarget_physical_interrupt: posted_redirection failed, using proxy interrupt delivery");
@@ -890,14 +906,17 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             tracing::warn!("retarget_physical_interrupt: Posted interrupt redirection is not supported");
         }
 
-        self.vp.partition.hcl.retarget_device_interrupt(
+        let result = self.vp.partition.hcl.retarget_device_interrupt(
             device_id,
             entry,
             vector,
             multicast,
             target_processors,
             false,
-        )
+        );
+        
+        tracing::warn!("retarget_physical_interrupt EXIT 2: result={:?}", result);
+        result
     }
 
     /// Attempts posted interrupt redirection.
@@ -914,10 +933,16 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             return None;
         }
 
-        tracing::warn!("try_posted_interrupts: entry");
+        tracing::warn!("try_posted_interrupts ENTRY");
 
         // Get the first processor index from the target processor set
-        let first_processor_index = target_processors.iter().next()?;
+        let first_processor_index = match target_processors.iter().next() {
+            Some(index) => index,
+            None => {
+                tracing::warn!("try_posted_interrupts: target_processors is empty, returning None");
+                return None;
+            }
+        };
         
         // Get the APIC ID for this processor
         let first_apic_id = self.vp.partition.vps
@@ -926,39 +951,62 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             .apic_id;
 
         // Map the interrupt vector in VTL2
-        let redirected_vector = self.vp.partition.hcl
-            .map_redirected_device_interrupt(vector, first_apic_id, true)?;
+        let redirected_vector = match self.vp.partition.hcl
+            .map_redirected_device_interrupt(vector, first_apic_id, true) {
+            Some(vec) => vec,
+            None => {
+                tracing::warn!("try_posted_interrupts: map_redirected_device_interrupt failed, returning None");
+                return None; // Fall back to proxy delivery
+            }
+        };
 
-        // Create a new ProcessorSet containing only the first processor
-        let mask_index = first_processor_index as usize / 64;
-        let bit_position = first_processor_index % 64;
-        let mut masks = vec![0u64; mask_index + 1];
-        masks[mask_index] = 1u64 << bit_position;
-        let valid_masks = 1u64 << mask_index;
-        let redirected_processor = ProcessorSet::from_processor_masks(valid_masks, &masks)?;
+        // Create a sparse ProcessorSet containing only the first processor
+        let mask_index = first_processor_index / 64;
+        let processor_mask = 1u64 << (first_processor_index % 64);
+        let masks = [processor_mask];
+        let redirected_processor = match ProcessorSet::from_processor_masks(
+            1u64 << mask_index,  // valid_masks: bit set at mask_index position
+            &masks,              // masks: single mask with the processor's bit set
+        ) {
+            Some(set) => set,
+            None => {
+                tracing::warn!(
+                    "try_posted_interrupts: failed to create redirected_processor set, returning None, \
+                     mask_index=0x{:x}, processor_mask=0x{:x}",
+                    mask_index,
+                    processor_mask
+                );
+                // Undo interrupt vector mapping in VTL2
+                self.vp.partition.hcl.map_redirected_device_interrupt(vector, first_apic_id, false);
+                return None; // Fall back to proxy delivery
+            }
+        };
+
+        // Gather mask details
+        let target_masks: Vec<u64> = target_processors.as_generic_set().collect();
+        let (target_valid_masks, target_mask_array) = target_masks.split_first()
+            .map(|(&valid, masks)| (valid, masks))
+            .unwrap_or((0, &[][..]));
+        
+        let redirected_masks: Vec<u64> = redirected_processor.as_generic_set().collect();
+        let (redirected_valid_masks, redirected_mask_array) = redirected_masks.split_first()
+            .map(|(&valid, masks)| (valid, masks))
+            .unwrap_or((0, &[][..]));
 
         tracing::warn!(
-            "try_posted_interrupts: vector={}, redirected_vector={}, multicast={}, first_processor_index={}, first_apic_id={}, target_processors_count={}, redirected_processor_count={}",
+            "try_posted_interrupts: vector=0x{:x}, redirected_vector=0x{:x}, multicast={}, first_processor_index=0x{:x}, first_apic_id=0x{:x}, target_processors_count=0x{:x}, redirected_processor_count=0x{:x}, target_valid_masks=0x{:x}, target_masks={:x?}, redirected_valid_masks=0x{:x}, redirected_masks={:x?}",
             vector,
             redirected_vector,
             multicast,
             first_processor_index,
             first_apic_id,
             target_processors.iter().count(),
-            redirected_processor.iter().count()
+            redirected_processor.iter().count(),
+            target_valid_masks,
+            target_mask_array,
+            redirected_valid_masks,
+            redirected_mask_array
         );
-
-        // Print target_processors mask details
-        let target_masks: Vec<u64> = target_processors.as_generic_set().collect();
-        if let Some((&target_valid_masks, target_mask_array)) = target_masks.split_first() {
-            tracing::warn!("try_posted_interrupts: target_processors - valid_masks: 0x{:x}, masks: {:?}", target_valid_masks, target_mask_array);
-        }
-
-        // Print redirected_processor mask details  
-        let redirected_masks: Vec<u64> = redirected_processor.as_generic_set().collect();
-        if let Some((&redirected_valid_masks, redirected_mask_array)) = redirected_masks.split_first() {
-            tracing::warn!("try_posted_interrupts: redirected_processor - valid_masks: 0x{:x}, masks: {:?}", redirected_valid_masks, redirected_mask_array);
-        }
 
         // Issue HvCallRetargetDeviceInterrupt hypercall with posted interrupt redirection enabled
         let result = self.vp.partition.hcl.retarget_device_interrupt(
