@@ -900,8 +900,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 tracing::warn!("retarget_physical_interrupt EXIT 1:result=Ok(())");
                 return Ok(());
             }
-            tracing::warn!("retarget_physical_interrupt: posted_redirection failed, using proxy interrupt delivery");
-
+            tracing::warn!("Posted interrupt redirection failed, using proxy interrupt delivery");
         } else {
             tracing::warn!("retarget_physical_interrupt: Posted interrupt redirection is not supported");
         }

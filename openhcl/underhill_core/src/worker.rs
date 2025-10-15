@@ -1318,7 +1318,7 @@ async fn new_underhill_vm(
         #[cfg(guest_arch = "x86_64")]
         virt::IsolationType::Tdx => {
             let supported = enlightenment_info.posted_interrupt_redirection_support();
-            tracing::warn!(CVM_ALLOWED, supported, "TDX posted interrupt redirection support");
+            tracing::info!(CVM_ALLOWED, supported, "Posted interrupt redirection");
             supported
         }
         _ => {
