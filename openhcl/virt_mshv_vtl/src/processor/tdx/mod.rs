@@ -14,7 +14,9 @@ use super::hardware_cvm;
 use super::vp_state;
 use super::vp_state::UhVpStateAccess;
 use crate::BackingShared;
+use crate::get_tsc_frequency;
 use crate::GuestVtl;
+use crate::IsolationType;
 use crate::TlbFlushLockAccess;
 use crate::UhCvmPartitionState;
 use crate::UhCvmVpState;
@@ -389,6 +391,12 @@ pub struct TdxBacked {
 
     #[inspect(flatten)]
     cvm: UhCvmVpState,
+
+    #[inspect(skip)]
+    tsc_frequency: u64,
+
+    #[inspect(skip)]
+    tsc_scale: u128,
 }
 
 #[derive(InspectMut)]
@@ -458,6 +466,7 @@ struct ExitStats {
     needs_interrupt_reinject: Counter,
     exception: Counter,
     descriptor_table: Counter,
+    timer_expired: Counter,
 }
 
 enum UhDirectOverlay {
@@ -810,6 +819,32 @@ impl TdxBacked {
     pub fn shared_pages_required_per_cpu() -> u64 {
         UhDirectOverlay::Count as u64
     }
+
+    /// Convert a time in nanoseconds from now to a TSC deadline.
+    fn ns_to_tsc_deadline(&self, nanos_from_now: u64) -> u64 {
+        
+        tracing::info!(
+            "ns_to_tsc_deadline nanos_from_now =  {}, TSC frequency {}, TSC scale {}",
+            nanos_from_now, self.tsc_frequency, self.tsc_scale
+        );
+        // Get current TSC value using the RDTSC instruction
+        let current_tsc = safe_intrinsics::rdtsc();
+        
+        // Convert nanoseconds to TSC units
+        // Formula: tsc_delta = nanos * (tsc_frequency / 1_000_000_000)
+        //let tsc_delta = (nanos_from_now * self.tsc_frequency) / 1_000_000_000;
+        let tsc_delta = ((nanos_from_now as u128 * self.tsc_scale) >> 64) as u64;
+
+        // Calculate future TSC deadline by adding delta to current TSC
+        // Using wrapping_add to handle potential overflow correctly
+        let future_tsc = current_tsc.wrapping_add(tsc_delta);
+
+        tracing::info!(
+            "ns_to_tsc_deadline current_tsc = {}, tsc_delta = {}, future_tsc = {}",
+            current_tsc, tsc_delta, future_tsc
+        );
+        future_tsc
+    }
 }
 
 // The memory used to back the untrusted synic is not guest-visible, but rather
@@ -1010,6 +1045,11 @@ impl BackingPrivate for TdxBacked {
                 params.vp_info,
                 UhDirectOverlay::Count as usize,
             )?,
+            tsc_frequency: get_tsc_frequency(IsolationType::Tdx).unwrap(),
+            tsc_scale: {
+                let tsc_frequency = get_tsc_frequency(IsolationType::Tdx).unwrap();
+                (((tsc_frequency as u128) << 64) / 1000_000_000_u128) as u128
+            }
         })
     }
 
@@ -2179,6 +2219,12 @@ impl UhProcessor<'_, TdxBacked> {
                 &mut self.backing.vtls[intercepted_vtl]
                     .exit_stats
                     .descriptor_table
+            }
+            VmxExitBasic::TIMER_EXPIRED => {
+                // The L2 TSC deadline timer has expired. The timer expiration will be
+                // handled by the main VP execution loop, so no additional processing is required here.
+                tracing::info!("Timer expired");
+                &mut self.backing.vtls[intercepted_vtl].exit_stats.timer_expired
             }
             _ => {
                 return Err(dev.fatal_error(UnknownVmxExit(exit_info.code().vmx_exit()).into()));
