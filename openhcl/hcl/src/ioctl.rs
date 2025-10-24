@@ -1608,7 +1608,7 @@ pub struct Hcl {
     supports_vtl_ret_action: bool,
     supports_register_page: bool,
     dr6_shared: bool,
-    supports_tdx_l2_tsc_deadline: bool,
+    supports_lower_vtl_timer_virt: bool,
     isolation: IsolationType,
     snp_register_bitmap: [u8; 64],
     sidecar: Option<SidecarClient>,
@@ -1646,9 +1646,9 @@ impl Hcl {
         self.dr6_shared
     }
 
-    /// Returns true if VTL driver supports TDX L2 TSC deadline timer service.
-    pub fn supports_tdx_l2_tsc_deadline(&self) -> bool {
-        self.supports_tdx_l2_tsc_deadline
+    /// Returns true if timer virtualization for lower VTL is supported.
+    pub fn supports_lower_vtl_timer_virt(&self) -> bool {
+        self.supports_lower_vtl_timer_virt
     }
 }
 
@@ -2332,12 +2332,12 @@ impl Hcl {
         let supports_vtl_ret_action = mshv_fd.check_extension(HCL_CAP_VTL_RETURN_ACTION)?;
         let supports_register_page = mshv_fd.check_extension(HCL_CAP_REGISTER_PAGE)?;
         let dr6_shared = mshv_fd.check_extension(HCL_CAP_DR6_SHARED)?;
-        let supports_tdx_l2_tsc_deadline = matches!(isolation, IsolationType::Tdx)
+        let supports_lower_vtl_timer_virt = matches!(isolation, IsolationType::Tdx)
             && mshv_fd.check_extension(HCL_CAP_TDX_L2_TSC_DEADLINE)?;
         tracing::debug!(
             supports_vtl_ret_action,
             supports_register_page,
-            supports_tdx_l2_tsc_deadline,
+            supports_lower_vtl_timer_virt,
             "HCL capabilities",
         );
 
@@ -2361,7 +2361,7 @@ impl Hcl {
             supports_vtl_ret_action,
             supports_register_page,
             dr6_shared,
-            supports_tdx_l2_tsc_deadline,
+            supports_lower_vtl_timer_virt,
             isolation,
             snp_register_bitmap,
             sidecar,

@@ -482,6 +482,11 @@ pub(crate) trait HardwareIsolatedBacking: Backing {
     );
 
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic>;
+
+    fn set_deadline_if_before(
+        this: &mut UhProcessor<'_, Self>,
+        ref_time_diff: u64,
+    );
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -782,6 +787,8 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                         continue;
                     }
 
+                    // TODO: Rewrite this to be agnostic
+//                    if !self.partition.hcl.supports_lower_vtl_timer_virt() {
                     // Arm the timer.
                     if let Some(timeout) = self.vmtime.get_timeout() {
                         let deadline = self.vmtime.host_time(timeout);
@@ -789,6 +796,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                             continue;
                         }
                     }
+//                    }
 
                     return <Result<_, VpHaltReason>>::Ok(()).into();
                 }

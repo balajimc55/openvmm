@@ -752,6 +752,12 @@ impl HardwareIsolatedBacking for TdxBacked {
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         self.untrusted_synic.as_mut()
     }
+    fn set_deadline_if_before(
+        _this: &mut UhProcessor<'_, Self>,
+        _ref_time_diff: u64,
+    ) {
+        // Placeholder
+    }
 }
 
 /// Partition-wide shared data for TDX VPs.

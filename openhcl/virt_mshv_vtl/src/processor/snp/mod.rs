@@ -389,6 +389,14 @@ impl HardwareIsolatedBacking for SnpBacked {
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         None
     }
+
+    fn set_deadline_if_before(
+        _this: &mut UhProcessor<'_, Self>,
+        _ref_time_diff: u64,
+    ) {
+        // TSC deadline timer is not supported for SNP.
+        // This is a no-op as the timer functionality is not available in this backing.
+    }
 }
 
 /// Partition-wide shared data for SNP VPs.
