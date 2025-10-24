@@ -574,7 +574,7 @@ mod ioctls {
     pub const HCL_CAP_REGISTER_PAGE: u32 = 1;
     pub const HCL_CAP_VTL_RETURN_ACTION: u32 = 2;
     pub const HCL_CAP_DR6_SHARED: u32 = 3;
-    pub const HCL_CAP_TDX_L2_TSC_DEADLINE: u32 = 4;
+    pub const HCL_CAP_LOWER_VTL_TIMER_VIRT: u32 = 4;
 
     ioctl_write_ptr!(
         /// Check for the presence of an extension capability.
@@ -2333,7 +2333,7 @@ impl Hcl {
         let supports_register_page = mshv_fd.check_extension(HCL_CAP_REGISTER_PAGE)?;
         let dr6_shared = mshv_fd.check_extension(HCL_CAP_DR6_SHARED)?;
         let supports_lower_vtl_timer_virt = matches!(isolation, IsolationType::Tdx)
-            && mshv_fd.check_extension(HCL_CAP_TDX_L2_TSC_DEADLINE)?;
+            && mshv_fd.check_extension(HCL_CAP_LOWER_VTL_TIMER_VIRT)?;
         tracing::debug!(
             supports_vtl_ret_action,
             supports_register_page,
