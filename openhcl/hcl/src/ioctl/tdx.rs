@@ -173,12 +173,12 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
     }
 
     /// Gets a reference to the TDX L2 TSC deadline state.
-    fn tdx_l2_tsc_deadline_state(&self) -> &tdx_l2_tsc_deadline_state {
+    pub fn tdx_l2_tsc_deadline_state(&self) -> &tdx_l2_tsc_deadline_state {
         &self.tdx_vp_context().l2_tsc_deadline
     }
 
     /// Gets a mutable reference to the TDX L2 TSC deadline state.
-    fn tdx_l2_tsc_deadline_state_mut(&mut self) -> &mut tdx_l2_tsc_deadline_state {
+    pub fn tdx_l2_tsc_deadline_state_mut(&mut self) -> &mut tdx_l2_tsc_deadline_state {
         &mut self.tdx_vp_context_mut().l2_tsc_deadline
     }
 

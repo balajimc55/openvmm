@@ -392,11 +392,13 @@ pub struct TdxBacked {
     #[inspect(flatten)]
     cvm: UhCvmVpState,
 
+    // TODO: Remove tsc_frequency
     #[inspect(skip)]
     tsc_frequency: u64,
 
+    /// Scale factor for fixed point conversion from 100ns to TSC units.
     #[inspect(skip)]
-    tsc_scale: u128,
+    tsc_scale_100ns: u128,
 }
 
 #[derive(InspectMut)]
@@ -753,10 +755,22 @@ impl HardwareIsolatedBacking for TdxBacked {
         self.untrusted_synic.as_mut()
     }
     fn set_deadline_if_before(
-        _this: &mut UhProcessor<'_, Self>,
-        _ref_time_diff: u64,
+        this: &mut UhProcessor<'_, Self>,
+        ref_time_from_now: u64,
     ) {
-        // Placeholder
+        if ref_time_from_now <= 0 {
+            return;
+        }
+        let state = this.runner.tdx_l2_tsc_deadline_state_mut();
+
+        let current_tsc = safe_intrinsics::rdtsc();
+        let tsc_delta = this.backing.ref_time_to_tsc(ref_time_from_now);
+        let future_tsc = current_tsc.wrapping_add(tsc_delta);
+
+        if future_tsc < state.deadline {
+            state.deadline = future_tsc;
+            state.update_deadline = 1;
+        }
     }
 }
 
@@ -826,30 +840,16 @@ impl TdxBacked {
         UhDirectOverlay::Count as u64
     }
 
-    /// Convert a time in nanoseconds from now to a TSC deadline.
-    fn ns_to_tsc_deadline(&self, nanos_from_now: u64) -> u64 {
-        
+    /// Convert from Hyper-V reference time (in 100ns) to TSC units.
+    fn ref_time_to_tsc(&self, ref_time: u64) -> u64 {
+        // Using fixed-point arithmetic to calculate
+        //  tsc_ticks = time_100ns * (tsc_frequency / 10_000_000)
+        let tsc_ticks = ((ref_time as u128 * self.tsc_scale_100ns) >> 64) as u64;
         tracing::info!(
-            "ns_to_tsc_deadline nanos_from_now =  {}, TSC frequency {}, TSC scale {}",
-            nanos_from_now, self.tsc_frequency, self.tsc_scale
+            "ref_time_to_tsc ref_time =  {}, TSC frequency {}, TSC scale {}, tsc_ticks = {}",
+            ref_time, self.tsc_frequency, self.tsc_scale_100ns, tsc_ticks
         );
-        // Get current TSC value using the RDTSC instruction
-        let current_tsc = safe_intrinsics::rdtsc();
-        
-        // Convert nanoseconds to TSC units
-        // Formula: tsc_delta = nanos * (tsc_frequency / 1_000_000_000)
-        //let tsc_delta = (nanos_from_now * self.tsc_frequency) / 1_000_000_000;
-        let tsc_delta = ((nanos_from_now as u128 * self.tsc_scale) >> 64) as u64;
-
-        // Calculate future TSC deadline by adding delta to current TSC
-        // Using wrapping_add to handle potential overflow correctly
-        let future_tsc = current_tsc.wrapping_add(tsc_delta);
-
-        tracing::info!(
-            "ns_to_tsc_deadline current_tsc = {}, tsc_delta = {}, future_tsc = {}",
-            current_tsc, tsc_delta, future_tsc
-        );
-        future_tsc
+        tsc_ticks
     }
 }
 
@@ -1052,9 +1052,10 @@ impl BackingPrivate for TdxBacked {
                 UhDirectOverlay::Count as usize,
             )?,
             tsc_frequency: get_tsc_frequency(IsolationType::Tdx).unwrap(),
-            tsc_scale: {
+            tsc_scale_100ns: {
                 let tsc_frequency = get_tsc_frequency(IsolationType::Tdx).unwrap();
-                (((tsc_frequency as u128) << 64) / 1000_000_000_u128) as u128
+                const NUM_100NS_IN_SEC: u128 = 10_1000_1000;
+                ((tsc_frequency as u128) << 64) / NUM_100NS_IN_SEC
             }
         })
     }
