@@ -2341,6 +2341,8 @@ impl Hcl {
             "HCL capabilities",
         );
 
+        tracing::warn!(supports_lower_vtl_timer_virt, "TDX_TIMER_OPT: HCL_CAP_LOWER_VTL_TIMER_VIRT status");
+
         let vtl_fd = mshv_fd.create_vtl()?;
 
         // Open the hypercall pseudo-device

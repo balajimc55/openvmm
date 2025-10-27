@@ -791,6 +791,10 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
 //                    if !self.partition.hcl.supports_lower_vtl_timer_virt() {
                     // Arm the timer.
                     if let Some(timeout) = self.vmtime.get_timeout() {
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            "TDX_TIMER_OPT: run_vp get_timeout returned some()"
+                        );
                         let deadline = self.vmtime.host_time(timeout);
                         if self.timer.poll_timer(cx, deadline).is_ready() {
                             continue;

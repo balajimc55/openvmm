@@ -2350,6 +2350,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 let ref_diff = next_ref_time.saturating_sub(ref_time_now);
 
                 if self.partition.hcl.supports_lower_vtl_timer_virt() {
+                    tracing::warn!("TDX_TIMER_OPT: Using set_deadline_if_before");
                     B::set_deadline_if_before(self, ref_diff);
                 } else {
                     // Convert from reference timer basis to vmtime basis via
