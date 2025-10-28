@@ -1054,7 +1054,7 @@ impl BackingPrivate for TdxBacked {
             tsc_frequency: get_tsc_frequency(IsolationType::Tdx).unwrap(),
             tsc_scale_100ns: {
                 let tsc_frequency = get_tsc_frequency(IsolationType::Tdx).unwrap();
-                const NUM_100NS_IN_SEC: u128 = 10_1000_1000;
+                const NUM_100NS_IN_SEC: u128 = 10_000_000;
                 ((tsc_frequency as u128) << 64) / NUM_100NS_IN_SEC
             }
         })
