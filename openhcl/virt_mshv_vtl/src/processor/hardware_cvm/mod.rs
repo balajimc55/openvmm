@@ -609,6 +609,22 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             | HvX64RegisterName::Stimer3Count
             | HvX64RegisterName::VsmVina) => {
                 let self_index = self.vp.vp_index();
+                if matches!(synic_reg, HvX64RegisterName::Stimer0Config
+                    | HvX64RegisterName::Stimer0Count
+                    | HvX64RegisterName::Stimer1Config
+                    | HvX64RegisterName::Stimer1Count
+                    | HvX64RegisterName::Stimer2Config
+                    | HvX64RegisterName::Stimer2Count
+                    | HvX64RegisterName::Stimer3Config
+                    | HvX64RegisterName::Stimer3Count) {
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        "TDX_TIMER_OPT: set_vp_register vpIndex = {}, synic_reg =  {:?}, VTL = {:?}",
+                        self_index.index(),
+                        synic_reg,
+                        vtl
+                    );
+                }
                 self.vp.backing.cvm_state_mut().hv[vtl].synic.write_reg(
                     synic_reg.into(),
                     reg.value,
@@ -2347,21 +2363,22 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                     .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
             );
             if let Some(next_ref_time) = next_ref_time {
-                let ref_diff = next_ref_time.saturating_sub(ref_time_now);
-
                 if self.partition.hcl.supports_lower_vtl_timer_virt() {
-                    tracing::warn!("TDX_TIMER_OPT: Using set_deadline_if_before");
-                    B::set_deadline_if_before(self, ref_diff);
+                    //tracing::warn!("TDX_TIMER_OPT: Using set_deadline_if_before");
+                    B::set_deadline_if_before(self, ref_time_now, next_ref_time);
                 } else {
                     // Convert from reference timer basis to vmtime basis via
                     // difference of programmed timer and current reference time.
+                    let ref_diff = next_ref_time.saturating_sub(ref_time_now);
                     let timeout = self
                         .vmtime
                         .now()
                         .wrapping_add(duration_from_100ns(ref_diff));
                     self.vmtime.set_timeout_if_before(timeout);
                 }
-            }
+             }// else {
+            //     tracing::warn!("TDX_TIMER_OPT: vpIndex = {}, No next_ref_time from synic scan", self.vp_index().index());
+            // }
             if ready_sints == 0 {
                 break;
             }

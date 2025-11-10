@@ -265,7 +265,8 @@ pub struct tdx_vp_state {
 pub struct tdx_l2_tsc_deadline_state {
     pub deadline: u64,
     pub update_deadline: u8,
-    pub pad: [u8; 7],
+    pub enabled: u8,
+    pub pad: [u8; 6],
 }
 
 #[repr(C)]

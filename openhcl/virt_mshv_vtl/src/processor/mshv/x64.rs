@@ -2021,6 +2021,7 @@ mod save_restore {
                 idle_control: _,
                 vmtime: _,
                 timer: _,
+                ref_time_next: _,
                 // This field is only used in dev/test scenarios
                 force_exit_sidecar: _,
                 signaled_sidecar_exit: _,

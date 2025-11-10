@@ -394,7 +394,7 @@ pub struct TdxBacked {
 
     // TODO: Remove tsc_frequency
     #[inspect(skip)]
-    tsc_frequency: u64,
+    _tsc_frequency: u64,
 
     /// Scale factor for fixed point conversion from 100ns to TSC units.
     #[inspect(skip)]
@@ -756,21 +756,30 @@ impl HardwareIsolatedBacking for TdxBacked {
     }
     fn set_deadline_if_before(
         this: &mut UhProcessor<'_, Self>,
-        ref_time_from_now: u64,
+        ref_time_now: u64,
+        ref_time_next: u64,
     ) {
-        if ref_time_from_now <= 0 {
+        if ref_time_next == this.ref_time_next {
             return;
         }
+
+        let ref_time_from_now = ref_time_next.saturating_sub(ref_time_now);
         let state = this.runner.tdx_l2_tsc_deadline_state_mut();
 
         let current_tsc = safe_intrinsics::rdtsc();
         let tsc_delta = this.backing.ref_time_to_tsc(ref_time_from_now);
         let future_tsc = current_tsc.wrapping_add(tsc_delta);
 
-        if future_tsc < state.deadline {
-            state.deadline = future_tsc;
-            state.update_deadline = 1;
-        }
+
+        // TODO: Modify this so that before setting new deadline, also store the original ref_time. 
+        // Then update a new tsc deadline only if its for a new ref time.
+        // let vp_index = this.vp_index().index();
+        // tracelimit::info_ratelimited!(CVM_ALLOWED,"TDX_TIMER_OPT: set_deadline_if_before vpIndex = {}, current deadline={}, update={}, future deadline={}, current rdtsc={}, ref time diff={}",
+        //     vp_index, state.deadline, state.update_deadline, future_tsc, current_tsc, ref_time_from_now);
+
+        state.deadline = future_tsc;
+        state.update_deadline = 1;
+        this.ref_time_next = ref_time_next;
     }
 }
 
@@ -845,10 +854,10 @@ impl TdxBacked {
         // Using fixed-point arithmetic to calculate
         //  tsc_ticks = time_100ns * (tsc_frequency / 10_000_000)
         let tsc_ticks = ((ref_time as u128 * self.tsc_scale_100ns) >> 64) as u64;
-        tracing::warn!(
-            "TDX_TIMER_OPT: ref_time_to_tsc ref_time =  {}, TSC frequency {}, TSC scale {}, tsc_ticks = {}",
-            ref_time, self.tsc_frequency, self.tsc_scale_100ns, tsc_ticks
-        );
+        // tracing::warn!(
+        //     "TDX_TIMER_OPT: ref_time_to_tsc ref_time =  {}, TSC frequency {}, TSC scale {}, tsc_ticks = {}",
+        //     ref_time, self.tsc_frequency, self.tsc_scale_100ns, tsc_ticks
+        // );
         tsc_ticks
     }
 }
@@ -1051,7 +1060,7 @@ impl BackingPrivate for TdxBacked {
                 params.vp_info,
                 UhDirectOverlay::Count as usize,
             )?,
-            tsc_frequency: get_tsc_frequency(IsolationType::Tdx).unwrap(),
+            _tsc_frequency: get_tsc_frequency(IsolationType::Tdx).unwrap(),
             tsc_scale_100ns: {
                 let tsc_frequency = get_tsc_frequency(IsolationType::Tdx).unwrap();
                 const NUM_100NS_IN_SEC: u128 = 10_000_000;
@@ -1808,6 +1817,13 @@ impl UhProcessor<'_, TdxBacked> {
             }
         }
 
+        tracelimit::info_ratelimited!(
+            CVM_ALLOWED,
+            "TDX_TIMER_OPT: handle_vmx_exit vpIndex = {:?}, exitReason = {:?}",
+            self.vp_index().index(),
+            vmx_exit.basic_reason()
+        );
+
         let mut breakpoint_debug_exception = false;
         let stat = match vmx_exit.basic_reason() {
             VmxExitBasic::IO_INSTRUCTION => {
@@ -1913,6 +1929,14 @@ impl UhProcessor<'_, TdxBacked> {
                 let value =
                     (gps[TdxGp::RAX] as u32 as u64) | ((gps[TdxGp::RDX] as u32 as u64) << 32);
 
+                tracelimit::info_ratelimited!(
+                    CVM_ALLOWED,
+                    "TDX_TIMER_OPT: handle_vmx_exit MSR_WRITE vpIndex = {:?}, exitReason = {:?}, msr_index = {:?}, value = {:?}",
+                    self.vp_index().index(),
+                    vmx_exit.basic_reason(),
+                    msr,
+                    value
+                );
                 if !self.cvm_try_protect_msr_write(intercepted_vtl, msr) {
                     let result = self.backing.cvm.lapics[intercepted_vtl]
                         .lapic
@@ -1994,6 +2018,11 @@ impl UhProcessor<'_, TdxBacked> {
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.vmcall
             }
             VmxExitBasic::HLT_INSTRUCTION => {
+                tracelimit::info_ratelimited!(
+                    CVM_ALLOWED,
+                    "TDX_TIMER_OPT: handle_vmx_exit HLT_INSTRUCTION vpIndex = {:?}",
+                    self.vp_index().index()
+                );
                 self.backing.cvm.lapics[intercepted_vtl].activity = MpState::Halted;
                 self.clear_interrupt_shadow(intercepted_vtl);
                 self.advance_to_next_instruction(intercepted_vtl);
@@ -2230,10 +2259,7 @@ impl UhProcessor<'_, TdxBacked> {
             VmxExitBasic::TIMER_EXPIRED => {
                 // The L2 TSC deadline timer has expired. The timer expiration will be
                 // handled by the main VP execution loop, so no additional processing is required here.
-                tracelimit::warn_ratelimited!(
-                    CVM_ALLOWED,
-                    "TDX_TIMER_OPT: Timer Expired"
-                );
+                tracelimit::info_ratelimited!(CVM_ALLOWED, "TDX_TIMER_OPT: Timer Expired vpIndex = {}", self.vp_index().index());
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.timer_expired
             }
             _ => {

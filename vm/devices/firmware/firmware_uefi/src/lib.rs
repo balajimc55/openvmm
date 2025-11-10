@@ -235,6 +235,11 @@ impl UefiDevice {
     }
 
     fn write_data(&mut self, addr: u32, data: u32) {
+        tracelimit::warn_ratelimited!(
+            ?addr,
+            value = data,
+            "TDX_TIMER_OPT: uefi write_data invoked"
+        );
         match UefiCommand(addr) {
             UefiCommand::NVRAM => block_on(self.nvram_handle_command(data.into())),
             UefiCommand::EVENT_LOG_FLUSH => self.event_log_flush(data),
@@ -362,6 +367,7 @@ impl PortIoIntercept for UefiDevice {
     }
 
     fn io_write(&mut self, io_port: u16, data: &[u8]) -> IoResult {
+        
         if data.len() != 4 {
             return IoResult::Err(IoError::InvalidAccessSize);
         }
@@ -369,6 +375,13 @@ impl PortIoIntercept for UefiDevice {
         let offset = io_port - IO_PORT_RANGE_BEGIN;
 
         let v = u32::from_ne_bytes(data.try_into().unwrap());
+        tracelimit::warn_ratelimited!(
+            io_port,
+            offset,
+            value = v,
+            address = self.address,
+            "TDX_TIMER_OPT: uefi io_write"
+        );
         match offset {
             REGISTER_ADDRESS => {
                 self.address = v;
@@ -406,7 +419,15 @@ impl MmioIntercept for UefiDevice {
         };
 
         let v = u32::from_ne_bytes(data);
-        match (addr - MMIO_RANGE_BEGIN) as u16 {
+        let offset = (addr - MMIO_RANGE_BEGIN) as u16;
+        tracelimit::info_ratelimited!(
+            addr,
+            offset,
+            value = v,
+            address = self.address,
+            "uefi mmio_write"
+        );
+        match offset {
             REGISTER_ADDRESS => {
                 self.address = v;
             }
