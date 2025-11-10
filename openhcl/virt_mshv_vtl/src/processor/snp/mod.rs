@@ -392,7 +392,8 @@ impl HardwareIsolatedBacking for SnpBacked {
 
     fn set_deadline_if_before(
         _this: &mut UhProcessor<'_, Self>,
-        _ref_time_diff: u64,
+        _ref_time_now: u64,
+        _ref_time_next: u64,
     ) {
         // TSC deadline timer is not supported for SNP.
         // This is a no-op as the timer functionality is not available in this backing.

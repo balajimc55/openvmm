@@ -119,6 +119,7 @@ pub struct UhProcessor<'a, T: Backing> {
     runner: ProcessorRunner<'a, T::HclBacking<'a>>,
     #[inspect(mut)]
     backing: T,
+    ref_time_next: u64,
 }
 
 #[derive(Inspect)]
@@ -485,7 +486,8 @@ pub(crate) trait HardwareIsolatedBacking: Backing {
 
     fn set_deadline_if_before(
         this: &mut UhProcessor<'_, Self>,
-        ref_time_diff: u64,
+        ref_time_now: u64,
+        ref_time_next: u64,
     );
 }
 
@@ -787,8 +789,6 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                         continue;
                     }
 
-                    // TODO: Rewrite this to be agnostic
-//                    if !self.partition.hcl.supports_lower_vtl_timer_virt() {
                     // Arm the timer.
                     if let Some(timeout) = self.vmtime.get_timeout() {
                         let deadline = self.vmtime.host_time(timeout);
@@ -796,7 +796,6 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                             continue;
                         }
                     }
-//                    }
 
                     return <Result<_, VpHaltReason>>::Ok(()).into();
                 }
@@ -898,6 +897,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 vtl2: VtlArray::new(false),
             },
             exit_activities: Default::default(),
+            ref_time_next: 0,
         };
 
         T::init(&mut vp);
