@@ -771,12 +771,10 @@ impl HardwareIsolatedBacking for TdxBacked {
         let future_tsc = current_tsc.wrapping_add(tsc_delta);
 
 
-        // TODO: Modify this so that before setting new deadline, also store the original ref_time. 
-        // Then update a new tsc deadline only if its for a new ref time.
-        // let vp_index = this.vp_index().index();
         // tracelimit::info_ratelimited!(CVM_ALLOWED,"TDX_TIMER_OPT: set_deadline_if_before vpIndex = {}, current deadline={}, update={}, future deadline={}, current rdtsc={}, ref time diff={}",
         //     vp_index, state.deadline, state.update_deadline, future_tsc, current_tsc, ref_time_from_now);
 
+        // TODO: update only when there is a new "ref_time_next".
         state.deadline = future_tsc;
         state.update_deadline = 1;
         this.ref_time_next = ref_time_next;
@@ -854,10 +852,11 @@ impl TdxBacked {
         // Using fixed-point arithmetic to calculate
         //  tsc_ticks = time_100ns * (tsc_frequency / 10_000_000)
         let tsc_ticks = ((ref_time as u128 * self.tsc_scale_100ns) >> 64) as u64;
-        // tracing::warn!(
-        //     "TDX_TIMER_OPT: ref_time_to_tsc ref_time =  {}, TSC frequency {}, TSC scale {}, tsc_ticks = {}",
-        //     ref_time, self.tsc_frequency, self.tsc_scale_100ns, tsc_ticks
-        // );
+//        tracelimit::info_ratelimited!(
+//            CVM_ALLOWED,
+//            "ref_time_to_tsc ref_time =  {}, TSC frequency {}, TSC scale {}, tsc_ticks = {}",
+//            ref_time, self._tsc_frequency, self.tsc_scale_100ns, tsc_ticks
+//        );
         tsc_ticks
     }
 }

@@ -2364,6 +2364,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             );
             if let Some(next_ref_time) = next_ref_time {
                 if self.partition.hcl.supports_lower_vtl_timer_virt() {
+                    // Use timer virtualization interface to set the deadline if lower VTL supports it.
                     //tracing::warn!("TDX_TIMER_OPT: Using set_deadline_if_before");
                     B::set_deadline_if_before(self, ref_time_now, next_ref_time);
                 } else {

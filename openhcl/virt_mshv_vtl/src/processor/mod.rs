@@ -789,8 +789,6 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                         continue;
                     }
 
-                    // TODO: Rewrite this to be agnostic
-//                    if !self.partition.hcl.supports_lower_vtl_timer_virt() {
                     // Arm the timer.
                     if let Some(timeout) = self.vmtime.get_timeout() {
                         tracelimit::warn_ratelimited!(
@@ -802,7 +800,6 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                             continue;
                         }
                     }
-//                    }
 
                     return <Result<_, VpHaltReason>>::Ok(()).into();
                 }
