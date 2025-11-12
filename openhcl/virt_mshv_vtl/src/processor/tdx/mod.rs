@@ -1816,12 +1816,12 @@ impl UhProcessor<'_, TdxBacked> {
             }
         }
 
-        tracelimit::info_ratelimited!(
-            CVM_ALLOWED,
-            "TDX_TIMER_OPT: handle_vmx_exit vpIndex = {:?}, exitReason = {:?}",
-            self.vp_index().index(),
-            vmx_exit.basic_reason()
-        );
+        // tracelimit::info_ratelimited!(
+        //     CVM_ALLOWED,
+        //     "TDX_TIMER_OPT: handle_vmx_exit vpIndex = {:?}, exitReason = {:?}",
+        //     self.vp_index().index(),
+        //     vmx_exit.basic_reason()
+        // );
 
         let mut breakpoint_debug_exception = false;
         let stat = match vmx_exit.basic_reason() {
@@ -1928,14 +1928,14 @@ impl UhProcessor<'_, TdxBacked> {
                 let value =
                     (gps[TdxGp::RAX] as u32 as u64) | ((gps[TdxGp::RDX] as u32 as u64) << 32);
 
-                tracelimit::info_ratelimited!(
-                    CVM_ALLOWED,
-                    "TDX_TIMER_OPT: handle_vmx_exit MSR_WRITE vpIndex = {:?}, exitReason = {:?}, msr_index = {:?}, value = {:?}",
-                    self.vp_index().index(),
-                    vmx_exit.basic_reason(),
-                    msr,
-                    value
-                );
+                // tracelimit::info_ratelimited!(
+                //     CVM_ALLOWED,
+                //     "TDX_TIMER_OPT: handle_vmx_exit MSR_WRITE vpIndex = {:?}, exitReason = {:?}, msr_index = {:?}, value = {:?}",
+                //     self.vp_index().index(),
+                //     vmx_exit.basic_reason(),
+                //     msr,
+                //     value
+                // );
                 if !self.cvm_try_protect_msr_write(intercepted_vtl, msr) {
                     let result = self.backing.cvm.lapics[intercepted_vtl]
                         .lapic
@@ -2258,7 +2258,7 @@ impl UhProcessor<'_, TdxBacked> {
             VmxExitBasic::TIMER_EXPIRED => {
                 // The L2 TSC deadline timer has expired. The timer expiration will be
                 // handled by the main VP execution loop, so no additional processing is required here.
-                tracelimit::info_ratelimited!(CVM_ALLOWED, "TDX_TIMER_OPT: Timer Expired vpIndex = {}", self.vp_index().index());
+                // tracelimit::info_ratelimited!(CVM_ALLOWED, "TDX_TIMER_OPT: Timer Expired vpIndex = {}", self.vp_index().index());
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.timer_expired
             }
             _ => {

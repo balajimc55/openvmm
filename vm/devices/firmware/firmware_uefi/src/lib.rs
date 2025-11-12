@@ -235,11 +235,11 @@ impl UefiDevice {
     }
 
     fn write_data(&mut self, addr: u32, data: u32) {
-        tracelimit::warn_ratelimited!(
-            ?addr,
-            value = data,
-            "TDX_TIMER_OPT: uefi write_data invoked"
-        );
+        // tracelimit::warn_ratelimited!(
+        //     ?addr,
+        //     value = data,
+        //     "TDX_TIMER_OPT: uefi write_data invoked"
+        // );
         match UefiCommand(addr) {
             UefiCommand::NVRAM => block_on(self.nvram_handle_command(data.into())),
             UefiCommand::EVENT_LOG_FLUSH => self.event_log_flush(data),
@@ -375,13 +375,13 @@ impl PortIoIntercept for UefiDevice {
         let offset = io_port - IO_PORT_RANGE_BEGIN;
 
         let v = u32::from_ne_bytes(data.try_into().unwrap());
-        tracelimit::warn_ratelimited!(
-            io_port,
-            offset,
-            value = v,
-            address = self.address,
-            "TDX_TIMER_OPT: uefi io_write"
-        );
+        // tracelimit::warn_ratelimited!(
+        //     io_port,
+        //     offset,
+        //     value = v,
+        //     address = self.address,
+        //     "TDX_TIMER_OPT: uefi io_write"
+        // );
         match offset {
             REGISTER_ADDRESS => {
                 self.address = v;

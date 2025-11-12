@@ -323,12 +323,15 @@ impl ProcessorVtlHv {
             hvdef::HV_X64_MSR_TSC_FREQUENCY => return Err(MsrError::InvalidAccess),
             hvdef::HV_X64_MSR_VP_ASSIST_PAGE => self.msr_write_vp_assist_page(v, prot_access)?,
             msr @ hvdef::HV_X64_MSR_SCONTROL..=hvdef::HV_X64_MSR_STIMER3_COUNT => {
-                tracelimit::warn_ratelimited!(
-                    "TDX_TIMER_OPT: msr_write vp_index={} msr=0x{:x} value=0x{:x}",
-                    self.vp_index.index(),
-                    msr,
-                    v
-                );
+
+                if n == hvdef::HV_X64_MSR_STIMER0_CONFIG || n == hvdef::HV_X64_MSR_STIMER0_COUNT {    
+                    tracelimit::warn_ratelimited!(
+                        "TDX_TIMER_OPT: msr_write vp_index={} msr=0x{:x} value=0x{:x}",
+                        self.vp_index.index(),
+                        msr,
+                        v
+                    );
+                }
                 self.synic.write_msr(msr, v, prot_access)?
             }
             _ => return Err(MsrError::Unknown),

@@ -461,6 +461,18 @@ impl LocalApicSet {
         auto_eoi: bool,
         wake: impl FnOnce(VpIndex),
     ) {
+        if vector == 0x40 {
+          tracelimit::warn_ratelimited!("TDX_TIMER_OPT: synic_interrupt vp_index={} called with vector 0x40", vp_index.index());
+          //tracing::warn!("TDX_TIMER_OPT: synic_interrupt vp_index={} called with vector 0x40", vp_index.index());
+        }
+        //  else {
+        //     tracelimit::info_ratelimited!(
+        //         "TDX_TIMER_OPT: synic_interrupt: vp_index={}, vector=0x{:02x}, auto_eoi={}",
+        //         vp_index.index(),
+        //         vector,
+        //         auto_eoi
+        //     );
+        // }
         let mutable = self.global.mutable.read();
         if let Some(slot) = mutable
             .by_index

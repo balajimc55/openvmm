@@ -410,6 +410,9 @@ impl ProcessorSynic {
 
     /// Sets the specified synthetic timer count register.
     pub fn set_stimer_count(&mut self, n: usize, v: u64) {
+        // if v == 0 {
+        //     return;
+        // }
         self.timers[n].count = v;
         if self.timers[n].config.auto_enable() && self.timers[n].count != 0 {
             self.timers[n].config.set_enabled(true);
