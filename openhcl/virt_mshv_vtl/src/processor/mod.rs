@@ -95,7 +95,7 @@ pub struct UhProcessor<'a, T: Backing> {
     partition: &'a UhPartitionInner,
     #[inspect(skip)]
     idle_control: Option<&'a mut IdleControl>,
-    #[inspect(skip)]
+    //#[inspect(skip)]
     kernel_returns: u64,
     #[inspect(hex, iter_by_index)]
     crash_reg: [u64; hvdef::HV_X64_GUEST_CRASH_PARAMETER_MSRS],
@@ -761,7 +761,14 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
             // Process VP activity and wait for the VP to be ready.
             poll_fn(|cx| {
                 loop {
-                    stop.check()?;
+                    if let Err(e) = stop.check() {
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            vp_index = self.vp_index().index(),
+                            "TDX_TIMER_OPT: VP stop requested, returning early"
+                        );
+                        return Err(VpHaltReason::from(e)).into();
+                    }
 
                     // Clear the run VP cancel request.
                     self.runner.clear_cancel();

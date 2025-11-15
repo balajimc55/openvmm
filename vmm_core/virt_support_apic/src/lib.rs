@@ -461,9 +461,9 @@ impl LocalApicSet {
         auto_eoi: bool,
         wake: impl FnOnce(VpIndex),
     ) {
-        if vector == 0x40 {
-          tracelimit::warn_ratelimited!("TDX_TIMER_OPT: synic_interrupt vp_index={} called with vector 0x40", vp_index.index());
-          //tracing::warn!("TDX_TIMER_OPT: synic_interrupt vp_index={} called with vector 0x40", vp_index.index());
+        if vector == 0x40 && hv1_emulator::hv::is_stimer0_fired() {
+          //tracelimit::warn_ratelimited!("TDX_TIMER_OPT: synic_interrupt vp_index={} called with vector 0x40", vp_index.index());
+          tracing::warn!("TDX_TIMER_OPT: synic_interrupt vp_index={} called with vector 0x40", vp_index.index());
         }
         //  else {
         //     tracelimit::info_ratelimited!(

@@ -759,6 +759,7 @@ impl HardwareIsolatedBacking for TdxBacked {
         ref_time_now: u64,
         ref_time_next: u64,
     ) {
+        let vp_index = this.vp_index().index();
         if ref_time_next == this.ref_time_next {
             return;
         }
@@ -766,13 +767,19 @@ impl HardwareIsolatedBacking for TdxBacked {
         let ref_time_from_now = ref_time_next.saturating_sub(ref_time_now);
         let state = this.runner.tdx_l2_tsc_deadline_state_mut();
 
+        if state.update_deadline == 0 && hv1_emulator::hv::is_stimer0_fired() {
+            tracing::info!(CVM_ALLOWED,"TDX_TIMER_OPT: set_deadline_if_before vpIndex = {}, update_deadline was zero",
+                vp_index);
+        }
+
         let current_tsc = safe_intrinsics::rdtsc();
         let tsc_delta = this.backing.ref_time_to_tsc(ref_time_from_now);
         let future_tsc = current_tsc.wrapping_add(tsc_delta);
 
-
-        // tracelimit::info_ratelimited!(CVM_ALLOWED,"TDX_TIMER_OPT: set_deadline_if_before vpIndex = {}, current deadline={}, update={}, future deadline={}, current rdtsc={}, ref time diff={}",
-        //     vp_index, state.deadline, state.update_deadline, future_tsc, current_tsc, ref_time_from_now);
+        if hv1_emulator::hv::is_stimer0_fired() {
+            tracing::info!(CVM_ALLOWED,"TDX_TIMER_OPT: set_deadline_if_before vpIndex = {}, current deadline={}, update={}, future deadline={}, current rdtsc={}, ref time diff={}",
+                vp_index, state.deadline, state.update_deadline, future_tsc, current_tsc, ref_time_from_now);
+        }
 
         // TODO: update only when there is a new "ref_time_next".
         state.deadline = future_tsc;

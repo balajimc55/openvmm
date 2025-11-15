@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 hvdef.workspace = true
+hv1_emulator.workspace = true
 vm_topology.workspace = true
 vmcore.workspace = true
 virt.workspace = true

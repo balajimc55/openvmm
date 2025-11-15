@@ -21,12 +21,25 @@ use parking_lot::Mutex;
 use safeatomic::AtomicSliceOps;
 use std::mem::offset_of;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 use virt::x86::MsrError;
 use vm_topology::processor::VpIndex;
 use vmcore::reference_time::ReferenceTimeSource;
 use x86defs::cpuid::Vendor;
 use zerocopy::FromZeros;
+
+/// STIMER0_COUNT state tracking
+const STIMER0_STATE_UNINITIALIZED: u8 = 0;
+const STIMER0_STATE_ARMED: u8 = 1;
+const STIMER0_STATE_FIRED: u8 = 2;
+
+static STIMER0_COUNT_STATE: AtomicU8 = AtomicU8::new(STIMER0_STATE_UNINITIALIZED);
+
+/// Returns true if STIMER0_COUNT state has reached the "fired" state
+pub fn is_stimer0_fired() -> bool {
+    STIMER0_COUNT_STATE.load(Ordering::Relaxed) == STIMER0_STATE_FIRED
+}
 
 /// The partition-wide hypervisor state.
 #[derive(Inspect)]
@@ -332,6 +345,29 @@ impl ProcessorVtlHv {
                         v
                     );
                 }
+                
+                // Monitor STIMER0_COUNT writes for state tracking
+                if n == hvdef::HV_X64_MSR_STIMER0_COUNT {
+                    let current_state = STIMER0_COUNT_STATE.load(Ordering::Relaxed);
+                    
+                    if v != 0 && current_state == STIMER0_STATE_UNINITIALIZED {
+                        // Transition from uninitialized to armed on first non-zero write
+                        STIMER0_COUNT_STATE.store(STIMER0_STATE_ARMED, Ordering::Relaxed);
+                        tracing::warn!(
+                            "TDX_TIMER_OPT: STIMER0_COUNT state: uninitialized -> armed, vp_index={}, value=0x{:x}",
+                            self.vp_index.index(),
+                            v
+                        );
+                    } else if v == 0 && current_state == STIMER0_STATE_ARMED {
+                        // Transition from armed to fired on zero write after armed
+                        STIMER0_COUNT_STATE.store(STIMER0_STATE_FIRED, Ordering::Relaxed);
+                        tracing::warn!(
+                            "TDX_TIMER_OPT: STIMER0_COUNT state: armed -> fired, vp_index={}",
+                            self.vp_index.index()
+                        );
+                    }
+                }
+                
                 self.synic.write_msr(msr, v, prot_access)?
             }
             _ => return Err(MsrError::Unknown),

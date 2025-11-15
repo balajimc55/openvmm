@@ -403,7 +403,10 @@ impl ProcessorSynic {
 
     /// Sets the specified synthetic timer configuration register.
     pub fn set_stimer_config(&mut self, n: usize, v: u64) {
-        let config = v.into();
+        let config: HvSynicStimerConfig = v.into();
+        // if config.enabled() == false {
+        //     return;
+        // }
         self.timers[n].config = config;
         self.timers[n].reevaluate = true;
     }

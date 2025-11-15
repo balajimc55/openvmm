@@ -2377,7 +2377,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                         .wrapping_add(duration_from_100ns(ref_diff));
                     self.vmtime.set_timeout_if_before(timeout);
                 }
-             }// else {
+             }
+            //  else if hv1_emulator::hv::is_stimer0_fired() {
             //     tracing::warn!("TDX_TIMER_OPT: vpIndex = {}, No next_ref_time from synic scan", self.vp_index().index());
             // }
             if ready_sints == 0 {
