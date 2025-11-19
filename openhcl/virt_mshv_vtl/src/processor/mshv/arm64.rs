@@ -170,6 +170,7 @@ impl BackingPrivate for HypervisorBackedArm64 {
         }
 
         this.unlock_tlb_lock(Vtl::Vtl2);
+        this.count_return_to_lower_vtl += 1;
         let intercepted = this
             .runner
             .run()

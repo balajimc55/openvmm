@@ -776,10 +776,10 @@ impl HardwareIsolatedBacking for TdxBacked {
         let tsc_delta = this.backing.ref_time_to_tsc(ref_time_from_now);
         let future_tsc = current_tsc.wrapping_add(tsc_delta);
 
-        if hv1_emulator::hv::is_stimer0_fired() {
-            tracing::info!(CVM_ALLOWED,"TDX_TIMER_OPT: set_deadline_if_before vpIndex = {}, current deadline={}, update={}, future deadline={}, current rdtsc={}, ref time diff={}",
-                vp_index, state.deadline, state.update_deadline, future_tsc, current_tsc, ref_time_from_now);
-        }
+        // if hv1_emulator::hv::is_stimer0_fired() {
+        //     tracing::info!(CVM_ALLOWED,"TDX_TIMER_OPT: set_deadline_if_before vpIndex = {}, current deadline={}, update={}, future deadline={}, current rdtsc={}, ref time diff={}",
+        //         vp_index, state.deadline, state.update_deadline, future_tsc, current_tsc, ref_time_from_now);
+        // }
 
         // TODO: update only when there is a new "ref_time_next".
         state.deadline = future_tsc;
@@ -1624,6 +1624,7 @@ impl UhProcessor<'_, TdxBacked> {
         self.runner
             .write_private_regs(&self.backing.vtls[next_vtl].private_regs);
 
+        self.count_return_to_lower_vtl += 1;
         let has_intercept = self
             .runner
             .run()

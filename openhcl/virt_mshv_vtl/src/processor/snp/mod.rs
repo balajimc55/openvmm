@@ -1226,6 +1226,7 @@ impl UhProcessor<'_, SnpBacked> {
         // Set the lazy EOI bit just before running.
         let lazy_eoi = self.sync_lazy_eoi(next_vtl);
 
+        self.count_return_to_lower_vtl += 1;
         let mut has_intercept = self
             .runner
             .run()

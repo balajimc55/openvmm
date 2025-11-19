@@ -97,6 +97,7 @@ pub struct UhProcessor<'a, T: Backing> {
     idle_control: Option<&'a mut IdleControl>,
     //#[inspect(skip)]
     kernel_returns: u64,
+    count_return_to_lower_vtl: u64,
     #[inspect(hex, iter_by_index)]
     crash_reg: [u64; hvdef::HV_X64_GUEST_CRASH_PARAMETER_MSRS],
     vmtime: VmTimeAccess,
@@ -893,6 +894,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             runner,
             idle_control,
             kernel_returns: 0,
+            count_return_to_lower_vtl: 0,
             crash_reg: [0; hvdef::HV_X64_GUEST_CRASH_PARAMETER_MSRS],
             _not_send: PhantomData,
             backing,

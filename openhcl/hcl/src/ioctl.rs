@@ -2047,6 +2047,8 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         // N.B. cpu_context and exit_context are mutated by this call.
         //
         // SAFETY: no safety requirements for this ioctl.
+
+        
         let r = unsafe { hcl_return_to_lower_vtl(self.hcl.mshv_vtl.file.as_raw_fd()) };
 
         let has_intercept = match r {

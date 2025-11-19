@@ -264,6 +264,7 @@ impl BackingPrivate for HypervisorBackedX86 {
             .map_err(|e| dev.fatal_error(ioctl::Error::Sidecar(e).into()))?
         } else {
             this.unlock_tlb_lock(Vtl::Vtl2);
+            this.count_return_to_lower_vtl += 1;
             this.runner
                 .run()
                 .map_err(|e| dev.fatal_error(MshvRunVpError(e).into()))?
@@ -2029,6 +2030,7 @@ mod save_restore {
                 vtls_tlb_locked: _,
                 // Statistic that should reset to 0 on restore
                 kernel_returns: _,
+                count_return_to_lower_vtl: _,
                 // Shared state should be handled by the backing
                 shared: _,
                 // The runner doesn't hold anything needing saving
