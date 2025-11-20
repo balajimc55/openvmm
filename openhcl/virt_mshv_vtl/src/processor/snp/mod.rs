@@ -395,8 +395,7 @@ impl HardwareIsolatedBacking for SnpBacked {
         _ref_time_now: u64,
         _ref_time_next: u64,
     ) {
-        // TSC deadline timer is not supported for SNP.
-        // This is a no-op as the timer functionality is not available in this backing.
+        unreachable!("timer virtualization for lower VTL is not supported for SNP")
     }
 }
 

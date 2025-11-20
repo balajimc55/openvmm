@@ -392,13 +392,13 @@ pub struct TdxBacked {
     #[inspect(flatten)]
     cvm: UhCvmVpState,
 
-    // TODO: Remove tsc_frequency
-    #[inspect(skip)]
-    _tsc_frequency: u64,
-
     /// Scale factor for fixed point conversion from 100ns to TSC units.
     #[inspect(skip)]
     tsc_scale_100ns: u128,
+
+    /// The reference time that was most recently consumed when configuring
+    ///  the TSC deadline timer.
+    ref_time_last: u64,
 }
 
 #[derive(InspectMut)]
@@ -759,7 +759,7 @@ impl HardwareIsolatedBacking for TdxBacked {
         ref_time_now: u64,
         ref_time_next: u64,
     ) {
-        if ref_time_next == this.ref_time_next {
+        if ref_time_next == this.backing.ref_time_last {
             return;
         }
 
@@ -776,7 +776,7 @@ impl HardwareIsolatedBacking for TdxBacked {
         // TODO: update only when there is a new "ref_time_next".
         state.deadline = future_tsc;
         state.update_deadline = 1;
-        this.ref_time_next = ref_time_next;
+        this.backing.ref_time_last = ref_time_next;
     }
 }
 
@@ -848,15 +848,9 @@ impl TdxBacked {
 
     /// Convert from Hyper-V reference time (in 100ns) to TSC units.
     fn ref_time_to_tsc(&self, ref_time: u64) -> u64 {
-        // Using fixed-point arithmetic to calculate
-        //  tsc_ticks = time_100ns * (tsc_frequency / 10_000_000)
-        let tsc_ticks = ((ref_time as u128 * self.tsc_scale_100ns) >> 64) as u64;
-//        tracelimit::info_ratelimited!(
-//            CVM_ALLOWED,
-//            "ref_time_to_tsc ref_time =  {}, TSC frequency {}, TSC scale {}, tsc_ticks = {}",
-//            ref_time, self._tsc_frequency, self.tsc_scale_100ns, tsc_ticks
-//        );
-        tsc_ticks
+        // Convert reference time to TSC ticks using fixed-point multiplication:
+        // tsc_ticks = time_100ns * (tsc_frequency / 10_000_000)
+        ((ref_time as u128 * self.tsc_scale_100ns) >> 64) as u64
     }
 }
 
@@ -1058,12 +1052,12 @@ impl BackingPrivate for TdxBacked {
                 params.vp_info,
                 UhDirectOverlay::Count as usize,
             )?,
-            _tsc_frequency: get_tsc_frequency(IsolationType::Tdx).unwrap(),
             tsc_scale_100ns: {
                 let tsc_frequency = get_tsc_frequency(IsolationType::Tdx).unwrap();
                 const NUM_100NS_IN_SEC: u128 = 10_000_000;
                 ((tsc_frequency as u128) << 64) / NUM_100NS_IN_SEC
-            }
+            },
+            ref_time_last: 0,
         })
     }
 
@@ -2235,9 +2229,8 @@ impl UhProcessor<'_, TdxBacked> {
                     .descriptor_table
             }
             VmxExitBasic::TIMER_EXPIRED => {
-                // The L2 TSC deadline timer has expired. The timer expiration will be
-                // handled by the main VP execution loop, so no additional processing is required here.
-                // tracelimit::info_ratelimited!(CVM_ALLOWED, "TDX_TIMER_OPT: Timer Expired vpIndex = {}", self.vp_index().index());
+                // The L2 TSC deadline timer has expired. The timer expiration will be handled by the main VP
+                // execution loop, so no additional processing is required here.
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.timer_expired
             }
             _ => {

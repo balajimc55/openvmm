@@ -119,7 +119,6 @@ pub struct UhProcessor<'a, T: Backing> {
     runner: ProcessorRunner<'a, T::HclBacking<'a>>,
     #[inspect(mut)]
     backing: T,
-    ref_time_next: u64,
 }
 
 #[derive(Inspect)]
@@ -487,7 +486,7 @@ pub(crate) trait HardwareIsolatedBacking: Backing {
     fn set_deadline_if_before(
         this: &mut UhProcessor<'_, Self>,
         ref_time_now: u64,
-        ref_time_next: u64,
+        next_ref_time: u64,
     );
 }
 
@@ -897,7 +896,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 vtl2: VtlArray::new(false),
             },
             exit_activities: Default::default(),
-            ref_time_next: 0,
         };
 
         T::init(&mut vp);
