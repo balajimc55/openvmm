@@ -851,11 +851,11 @@ impl TdxBacked {
         // Using fixed-point arithmetic to calculate
         //  tsc_ticks = time_100ns * (tsc_frequency / 10_000_000)
         let tsc_ticks = ((ref_time as u128 * self.tsc_scale_100ns) >> 64) as u64;
-        tracelimit::info_ratelimited!(
-            CVM_ALLOWED,
-            "ref_time_to_tsc ref_time =  {}, TSC frequency {}, TSC scale {}, tsc_ticks = {}",
-            ref_time, self._tsc_frequency, self.tsc_scale_100ns, tsc_ticks
-        );
+//        tracelimit::info_ratelimited!(
+//            CVM_ALLOWED,
+//            "ref_time_to_tsc ref_time =  {}, TSC frequency {}, TSC scale {}, tsc_ticks = {}",
+//            ref_time, self._tsc_frequency, self.tsc_scale_100ns, tsc_ticks
+//        );
         tsc_ticks
     }
 }
@@ -2237,7 +2237,7 @@ impl UhProcessor<'_, TdxBacked> {
             VmxExitBasic::TIMER_EXPIRED => {
                 // The L2 TSC deadline timer has expired. The timer expiration will be
                 // handled by the main VP execution loop, so no additional processing is required here.
-                tracelimit::info_ratelimited!(CVM_ALLOWED, "TDX_TIMER_OPT: Timer Expired vpIndex = {}", self.vp_index().index());
+                // tracelimit::info_ratelimited!(CVM_ALLOWED, "TDX_TIMER_OPT: Timer Expired vpIndex = {}", self.vp_index().index());
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.timer_expired
             }
             _ => {
