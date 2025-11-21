@@ -15,6 +15,7 @@ use super::vp_state;
 use super::vp_state::UhVpStateAccess;
 use crate::BackingShared;
 use crate::GuestVtl;
+use crate::IsolationType;
 use crate::TlbFlushLockAccess;
 use crate::UhCvmPartitionState;
 use crate::UhCvmVpState;
@@ -22,6 +23,7 @@ use crate::UhPartitionInner;
 use crate::UhPartitionNewParams;
 use crate::UhProcessor;
 use crate::WakeReason;
+use crate::get_tsc_frequency;
 use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
 use guestmem::GuestMemory;
@@ -389,6 +391,36 @@ pub struct TdxBacked {
 
     #[inspect(flatten)]
     cvm: UhCvmVpState,
+
+    /// Scale factor for fixed point conversion from 100ns to TSC units.
+    #[inspect(skip)]
+    tsc_scale_100ns: u128,
+}
+
+/// TSC deadline timer state for a VTL.
+#[derive(Inspect)]
+struct TscDeadlineState {
+    /// The TSC deadline value for this VTL.
+    deadline: u64,
+    /// Whether the deadline needs to be updated in the kernel.
+    pending_update: bool,
+    /// The reference time that was most recently consumed when configuring
+    /// the TSC deadline timer for this VTL.
+    ref_time_last: u64,
+    /// Whether timer virtualization is enabled for this VTL.
+    /// VTL0 starts enabled, VTL1 starts disabled.
+    enabled: bool,
+}
+
+impl TscDeadlineState {
+    fn new(enabled: bool) -> Self {
+        Self {
+            deadline: 0,
+            pending_update: false,
+            ref_time_last: 0,
+            enabled,
+        }
+    }
 }
 
 #[derive(InspectMut)]
@@ -416,6 +448,10 @@ struct TdxVtl {
 
     /// TDX only TLB flush state.
     flush_state: TdxFlushState,
+
+    /// TSC deadline timer state for this VTL.
+    #[inspect(flatten)]
+    tsc_deadline_state: TscDeadlineState,
 
     enter_stats: EnterStats,
     exit_stats: ExitStats,
@@ -458,6 +494,7 @@ struct ExitStats {
     needs_interrupt_reinject: Counter,
     exception: Counter,
     descriptor_table: Counter,
+    timer_expired: Counter,
 }
 
 enum UhDirectOverlay {
@@ -479,9 +516,29 @@ impl HardwareIsolatedBacking for TdxBacked {
         &shared.cvm
     }
 
-    fn switch_vtl(this: &mut UhProcessor<'_, Self>, _source_vtl: GuestVtl, target_vtl: GuestVtl) {
+    fn switch_vtl(this: &mut UhProcessor<'_, Self>, source_vtl: GuestVtl, target_vtl: GuestVtl) {
         // The GPs, Fxsave, and CR2 are saved in the shared kernel state. No copying needed.
         // Debug registers and XFEM are shared architecturally. No copying needed.
+
+        // Save the current TSC deadline state from the kernel to the source VTL.
+        if this.backing.vtls[source_vtl].tsc_deadline_state.enabled {
+            let kernel_state = this.runner.tdx_l2_tsc_deadline_state();
+            this.backing.vtls[source_vtl].tsc_deadline_state.deadline = kernel_state.deadline;
+            // Clear pending update flag since we've saved the state
+            this.backing.vtls[source_vtl]
+                .tsc_deadline_state
+                .pending_update = false;
+        }
+
+        // Restore the TSC deadline state for the target VTL to the kernel.
+        if this.backing.vtls[target_vtl].tsc_deadline_state.enabled {
+            let kernel_state = this.runner.tdx_l2_tsc_deadline_state_mut();
+            kernel_state.deadline = this.backing.vtls[target_vtl].tsc_deadline_state.deadline;
+            kernel_state.update_deadline = this.backing.vtls[target_vtl]
+                .tsc_deadline_state
+                .pending_update
+                .into();
+        }
 
         this.backing.cvm_state_mut().exit_vtl = target_vtl;
     }
@@ -743,6 +800,39 @@ impl HardwareIsolatedBacking for TdxBacked {
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         self.untrusted_synic.as_mut()
     }
+
+    fn is_timer_virt_enabled(&self, vtl: GuestVtl) -> bool {
+        self.vtls[vtl].tsc_deadline_state.enabled
+    }
+
+    fn set_deadline_if_before(
+        this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        ref_time_now: u64,
+        ref_time_next: u64,
+    ) {
+        // Timer virtualization is only applicable for VTL0 and VTL1.
+        // The caller has already checked if timer virtualization is enabled for this VTL.
+
+        if ref_time_next == this.backing.vtls[vtl].tsc_deadline_state.ref_time_last {
+            return;
+        }
+
+        let ref_time_from_now = ref_time_next.saturating_sub(ref_time_now);
+        let current_tsc = safe_intrinsics::rdtsc();
+        let tsc_delta = this.backing.ref_time_to_tsc(ref_time_from_now);
+        let future_tsc = current_tsc.wrapping_add(tsc_delta);
+
+        // tracelimit::info_ratelimited!(CVM_ALLOWED,"TDX_TIMER_OPT: set_deadline_if_before vpIndex = {}, current deadline={}, update={}, future deadline={}, current rdtsc={}, ref time diff={}",
+        //     vp_index, state.deadline, state.update_deadline, future_tsc, current_tsc, ref_time_from_now);
+
+        // Store the TSC deadline for this VTL. It will be written to the kernel state
+        // when we switch to this VTL.
+        let tsc_state = &mut this.backing.vtls[vtl].tsc_deadline_state;
+        tsc_state.deadline = future_tsc;
+        tsc_state.pending_update = true;
+        tsc_state.ref_time_last = ref_time_next;
+    }
 }
 
 /// Partition-wide shared data for TDX VPs.
@@ -759,6 +849,9 @@ pub struct TdxBackedShared {
     active_vtl: Vec<AtomicU8>,
     /// CR4 bits that the guest is allowed to set to 1.
     cr4_allowed_bits: u64,
+    /// Per-VTL timer virtualization enablement.
+    /// This controls whether timer virtualization is enabled for each VTL.
+    timer_virt_enabled_vtls: VtlArray<bool, 2>,
 }
 
 impl TdxBackedShared {
@@ -788,6 +881,12 @@ impl TdxBackedShared {
                 .map(AtomicU8::new)
                 .collect(),
             cr4_allowed_bits,
+            // Timer virtualization is enabled for VTL0 by default if the hypervisor supports it,
+            // and disabled for VTL1. This can be changed in the future if VTL1 timer
+            // virtualization is needed.
+            timer_virt_enabled_vtls: VtlArray::from_fn(|vtl| {
+                vtl == Vtl::Vtl0 && params.hcl.supports_lower_vtl_timer_virt()
+            }),
         })
     }
 
@@ -809,6 +908,13 @@ impl TdxBacked {
     /// for each CPU.
     pub fn shared_pages_required_per_cpu() -> u64 {
         UhDirectOverlay::Count as u64
+    }
+
+    /// Convert from Hyper-V reference time (in 100ns) to TSC units.
+    fn ref_time_to_tsc(&self, ref_time: u64) -> u64 {
+        // Convert reference time to TSC ticks using fixed-point multiplication:
+        // tsc_ticks = time_100ns * (tsc_frequency / 10_000_000)
+        ((ref_time as u128 * self.tsc_scale_100ns) >> 64) as u64
     }
 }
 
@@ -996,6 +1102,8 @@ impl BackingPrivate for TdxBacked {
                     exception_error_code: 0,
                     interruption_set: false,
                     flush_state: TdxFlushState::new(),
+                    // Timer virtualization enablement is configured per-VTL in the shared state.
+                    tsc_deadline_state: TscDeadlineState::new(shared.timer_virt_enabled_vtls[vtl]),
                     private_regs: TdxPrivateRegs::new(vtl),
                     enter_stats: Default::default(),
                     exit_stats: Default::default(),
@@ -1010,6 +1118,11 @@ impl BackingPrivate for TdxBacked {
                 params.vp_info,
                 UhDirectOverlay::Count as usize,
             )?,
+            tsc_scale_100ns: {
+                let tsc_frequency = get_tsc_frequency(IsolationType::Tdx).unwrap();
+                const NUM_100NS_IN_SEC: u128 = 10_000_000;
+                ((tsc_frequency as u128) << 64) / NUM_100NS_IN_SEC
+            },
         })
     }
 
@@ -1561,6 +1674,14 @@ impl UhProcessor<'_, TdxBacked> {
 
         self.runner
             .write_private_regs(&self.backing.vtls[next_vtl].private_regs);
+
+        // Restore the TSC deadline state for this VTL if timer virtualization is enabled.
+        if self.backing.vtls[next_vtl].tsc_deadline_state.enabled {
+            let tsc_state = &self.backing.vtls[next_vtl].tsc_deadline_state;
+            let kernel_state = self.runner.tdx_l2_tsc_deadline_state_mut();
+            kernel_state.deadline = tsc_state.deadline;
+            kernel_state.update_deadline = tsc_state.pending_update.into();
+        }
 
         let has_intercept = self
             .runner
@@ -2179,6 +2300,11 @@ impl UhProcessor<'_, TdxBacked> {
                 &mut self.backing.vtls[intercepted_vtl]
                     .exit_stats
                     .descriptor_table
+            }
+            VmxExitBasic::TIMER_EXPIRED => {
+                // The L2 TSC deadline timer has expired. The timer expiration will be handled by the main VP
+                // execution loop, so no additional processing is required here.
+                &mut self.backing.vtls[intercepted_vtl].exit_stats.timer_expired
             }
             _ => {
                 return Err(dev.fatal_error(UnknownVmxExit(exit_info.code().vmx_exit()).into()));

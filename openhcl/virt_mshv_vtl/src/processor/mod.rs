@@ -482,6 +482,16 @@ pub(crate) trait HardwareIsolatedBacking: Backing {
     );
 
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic>;
+
+    /// Check if timer virtualization is enabled for the given VTL.
+    fn is_timer_virt_enabled(&self, vtl: GuestVtl) -> bool;
+
+    fn set_deadline_if_before(
+        this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        ref_time_now: u64,
+        next_ref_time: u64,
+    );
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]

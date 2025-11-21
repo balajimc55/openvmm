@@ -389,6 +389,19 @@ impl HardwareIsolatedBacking for SnpBacked {
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         None
     }
+
+    fn is_timer_virt_enabled(&self, _vtl: GuestVtl) -> bool {
+        false
+    }
+
+    fn set_deadline_if_before(
+        _this: &mut UhProcessor<'_, Self>,
+        _vtl: GuestVtl,
+        _ref_time_now: u64,
+        _ref_time_next: u64,
+    ) {
+        unreachable!("timer virtualization for lower VTL is not supported for SNP")
+    }
 }
 
 /// Partition-wide shared data for SNP VPs.
