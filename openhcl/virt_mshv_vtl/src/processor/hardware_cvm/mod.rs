@@ -2347,9 +2347,9 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                     .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
             );
             if let Some(next_ref_time) = next_ref_time {
-                if self.partition.hcl.supports_lower_vtl_timer_virt() {
-                    // Use timer virtualization interface to set the deadline if lower VTL supports it.
-                    B::set_deadline_if_before(self, ref_time_now, next_ref_time);
+                if self.backing.is_timer_virt_enabled(vtl) {
+                    // Use timer virtualization interface to set the deadline.
+                    B::set_deadline_if_before(self, vtl, ref_time_now, next_ref_time);
                 } else {
                     // Convert from reference timer basis to vmtime basis via
                     // difference of programmed timer and current reference time.
